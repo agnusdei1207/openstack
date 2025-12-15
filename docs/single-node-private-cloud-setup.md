@@ -127,37 +127,66 @@ echo "127.0.0.1 openstack" | sudo tee -a /etc/hosts
 ### 1. Python 가상환경 생성
 
 ```bash
+# 시스템 Python과 분리된 독립적인 가상환경 생성
+# (의존성 충돌 방지 및 깔끔한 관리를 위해)
 python3 -m venv ~/kolla-venv
+
+# 가상환경 활성화 (프롬프트에 (kolla-venv) 표시됨)
 source ~/kolla-venv/bin/activate
+
+# pip 최신 버전으로 업그레이드 (호환성 및 보안)
 pip install -U pip
 ```
 
 ### 2. Kolla-Ansible 설치
 
 ```bash
+# Kolla-Ansible과 호환되는 Ansible 버전 설치
+# (2.14 이상 2.16 미만 버전만 지원)
 pip install 'ansible-core>=2.14,<2.16'
+
+# Kolla-Ansible 설치 (OpenStack 배포 자동화 도구)
 pip install kolla-ansible
 ```
 
 ### 3. 설정 파일 준비
 
 ```bash
-# 설정 디렉토리 생성
+# Kolla 설정 디렉토리 생성 (-p: 상위 디렉토리도 함께 생성)
 sudo mkdir -p /etc/kolla
+
+# 현재 사용자가 설정 파일을 수정할 수 있도록 소유권 변경
 sudo chown $USER:$USER /etc/kolla
 
-# 샘플 설정 복사
+# 기본 설정 템플릿 복사 (globals.yml, passwords.yml 등)
 cp -r ~/kolla-venv/share/kolla-ansible/etc_examples/kolla/* /etc/kolla/
+
+# 단일 노드용 인벤토리 파일 복사 (배포 대상 서버 목록)
 cp ~/kolla-venv/share/kolla-ansible/ansible/inventory/all-in-one ~/
 ```
 
 ### 4. globals.yml 설정
 
 ```bash
-# 네트워크 인터페이스 확인
+# 네트워크 인터페이스 이름 확인 (eth0, ens3 등)
+# globals.yml에서 이 값을 사용해야 함
 ip a
-# 예: eth0 또는 ens3
 ```
+
+1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN group default qlen 1000
+link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
+inet 127.0.0.1/8 scope host lo
+valid_lft forever preferred_lft forever
+inet6 ::1/128 scope host
+valid_lft forever preferred_lft forever
+2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc mq state UP group default qlen 1000
+link/ether fa:16:3e:f1:36:d2 brd ff:ff:ff:ff:ff:ff
+altname enp0s3
+altname ens3
+inet 192.168.0.92/24 metric 100 brd 192.168.0.255 scope global dynamic eth0
+valid_lft 85910sec preferred_lft 85910sec
+inet6 fe80::f816:3eff:fef1:36d2/64 scope link
+valid_lft forever preferred_lft forever
 
 ```bash
 cat > /etc/kolla/globals.yml << 'EOF'
@@ -165,11 +194,11 @@ cat > /etc/kolla/globals.yml << 'EOF'
 # 기본 설정
 kolla_base_distro: "ubuntu"
 kolla_install_type: "source"
-openstack_release: "2024.1"
+openstack_release: "2024.2"
 
 # 네트워크 인터페이스 (ip a로 확인한 값 입력)
-network_interface: "ens3"
-neutron_external_interface: "ens3"
+network_interface: "eth0"
+neutron_external_interface: "eth0"
 kolla_internal_vip_address: "127.0.0.1"
 
 # 단일 노드 설정
@@ -228,10 +257,13 @@ EOF
 ### 5. 패스워드 생성
 
 ```bash
+# 모든 OpenStack 서비스용 랜덤 패스워드 자동 생성
+# (passwords.yml 파일에 저장됨)
 kolla-genpwd
 
-# admin 패스워드 확인 (나중에 Horizon 로그인용)
+# Horizon 웹 대시보드 로그인용 admin 패스워드 확인
 grep keystone_admin_password /etc/kolla/passwords.yml
+# keystone_admin_password: dtxb5v22dpCb1OQtBFQ6iYQAHix3qmmdL3ou9W2h
 ```
 
 ---
@@ -241,12 +273,15 @@ grep keystone_admin_password /etc/kolla/passwords.yml
 ### 1. Ansible 의존성 설치
 
 ```bash
+# Kolla-Ansible 실행에 필요한 Ansible Galaxy 역할들 설치
 kolla-ansible install-deps
 ```
 
 ### 2. Bootstrap (Docker 자동 설치)
 
 ```bash
+# 서버 초기 설정 (Docker 설치, 사용자 권한 설정 등)
+# -i: 인벤토리 파일 지정 (배포 대상 서버 목록)
 kolla-ansible -i ~/all-in-one bootstrap-servers
 ```
 
@@ -255,6 +290,7 @@ kolla-ansible -i ~/all-in-one bootstrap-servers
 ### 3. 사전 검증
 
 ```bash
+# 배포 전 시스템 요구사항 검증 (포트 충돌, 설정 오류 등 체크)
 kolla-ansible -i ~/all-in-one prechecks
 ```
 
@@ -263,12 +299,14 @@ kolla-ansible -i ~/all-in-one prechecks
 ### 4. 배포 (20-40분 소요)
 
 ```bash
+# 실제 OpenStack 컨테이너들 배포 (모든 서비스 설치 및 실행)
 kolla-ansible -i ~/all-in-one deploy
 ```
 
 ### 5. 후처리
 
 ```bash
+# 배포 후 작업 (admin-openrc.sh 생성 등 환경 설정 파일 생성)
 kolla-ansible -i ~/all-in-one post-deploy
 ```
 
@@ -279,25 +317,28 @@ kolla-ansible -i ~/all-in-one post-deploy
 ### OpenStack CLI 설치
 
 ```bash
+# 명령어로 OpenStack 리소스 관리하기 위한 CLI 도구 설치
 pip install python-openstackclient
 ```
 
 ### 환경변수 로드
 
 ```bash
+# OpenStack API 인증 정보 환경변수 로드
+# (이후 openstack 명령어 사용 시 자동 인증)
 source /etc/kolla/admin-openrc.sh
 ```
 
 ### 동작 확인
 
 ```bash
-# 서비스 목록
+# 등록된 서비스 목록 확인 (Keystone, Glance, Nova 등)
 openstack service list
 
-# 엔드포인트 목록
+# API 엔드포인트 URL 목록 확인
 openstack endpoint list
 
-# 하이퍼바이저 상태
+# 가상화 호스트 상태 확인 (VM 실행 가능 여부)
 openstack hypervisor list
 ```
 
@@ -312,34 +353,36 @@ URL: http://<서버_Public_IP>:80
 ### 테스트 VM 생성
 
 ```bash
-# Cirros 테스트 이미지 다운로드
+# 경량 테스트용 Linux 이미지 다운로드 (15MB)
 wget http://download.cirros-cloud.net/0.6.2/cirros-0.6.2-x86_64-disk.img
 
-# 이미지 등록
+# Glance에 이미지 등록 (모든 프로젝트에서 사용 가능하도록 public 설정)
 openstack image create "cirros" \
   --file cirros-0.6.2-x86_64-disk.img \
   --disk-format qcow2 \
   --container-format bare \
   --public
 
-# Flavor 생성
+# VM 사양 정의 (RAM 512MB, 디스크 1GB, 1 vCPU)
 openstack flavor create --ram 512 --disk 1 --vcpus 1 m1.tiny
 
-# 네트워크 생성
+# VM이 사용할 가상 네트워크 생성
 openstack network create demo-net
+
+# 서브넷 생성 (IP 대역, 게이트웨이, DNS 설정)
 openstack subnet create --network demo-net \
   --subnet-range 192.168.100.0/24 \
   --gateway 192.168.100.1 \
   --dns-nameserver 8.8.8.8 \
   demo-subnet
 
-# 인스턴스 생성
+# VM 인스턴스 생성
 openstack server create --flavor m1.tiny \
   --image cirros \
   --network demo-net \
   test-vm
 
-# 상태 확인
+# VM 상태 확인 (ACTIVE면 정상)
 openstack server list
 ```
 
@@ -350,10 +393,10 @@ openstack server list
 ### 서비스 상태 확인
 
 ```bash
-# 모든 컨테이너 상태
+# 실행 중인 OpenStack 컨테이너 목록 확인
 docker ps
 
-# 특정 서비스 로그
+# 특정 서비스 컨테이너 로그 확인 (문제 발생 시 디버깅용)
 docker logs nova_compute
 docker logs neutron_server
 docker logs horizon
@@ -362,10 +405,10 @@ docker logs horizon
 ### 재시작 및 재설정
 
 ```bash
-# 설정 변경 후 재적용
+# globals.yml 수정 후 변경사항 적용 (전체 재배포 없이)
 kolla-ansible -i ~/all-in-one reconfigure
 
-# 특정 서비스만 재배포
+# 특정 서비스만 재배포 (--tags로 서비스 지정)
 kolla-ansible -i ~/all-in-one deploy --tags nova
 kolla-ansible -i ~/all-in-one deploy --tags horizon
 ```
@@ -373,15 +416,17 @@ kolla-ansible -i ~/all-in-one deploy --tags horizon
 ### 완전 삭제 (초기화)
 
 ```bash
-# 주의: 모든 데이터 삭제됨!
+# ⚠️ 주의: 모든 OpenStack 컨테이너와 데이터 완전 삭제!
 kolla-ansible -i ~/all-in-one destroy --yes-i-really-really-mean-it
 ```
 
 ### 업그레이드
 
 ```bash
-# 새 버전으로 업그레이드
+# Kolla-Ansible 최신 버전으로 업그레이드
 pip install -U kolla-ansible
+
+# OpenStack 서비스들 업그레이드 (다운타임 최소화)
 kolla-ansible -i ~/all-in-one upgrade
 ```
 
@@ -392,32 +437,32 @@ kolla-ansible -i ~/all-in-one upgrade
 ### 배포 실패 시
 
 ```bash
-# 로그 확인
-docker logs mariadb
-docker logs rabbitmq
-docker logs keystone
+# 핵심 서비스 컨테이너 로그 확인
+docker logs mariadb      # 데이터베이스
+docker logs rabbitmq     # 메시지 큐
+docker logs keystone     # 인증 서비스
 
-# 컨테이너 재시작
+# 문제 있는 컨테이너 재시작
 docker restart keystone
 ```
 
 ### 메모리 부족 시
 
 ```bash
-# 스왑 사용량 확인
+# RAM 및 스왔 사용량 확인
 free -h
 
-# 무거운 컨테이너 확인
+# 컨테이너별 리소스 사용량 확인 (메모리 많이 쓰는 컨테이너 식별)
 docker stats --no-stream
 ```
 
 ### VNC 콘솔 접속 안될 때
 
 ```bash
-# 6080 포트 확인
+# VNC 프록시 포트가 열려있는지 확인
 sudo netstat -tlnp | grep 6080
 
-# nova_novncproxy 컨테이너 확인
+# VNC 프록시 컨테이너 로그 확인
 docker logs nova_novncproxy
 ```
 
