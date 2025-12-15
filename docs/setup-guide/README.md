@@ -92,10 +92,10 @@ kolla-genpwd
 
 # Step 3: 배포 (20-40분 소요)
 kolla-ansible install-deps
-kolla-ansible -i ~/all-in-one bootstrap-servers
-kolla-ansible -i ~/all-in-one prechecks
-kolla-ansible -i ~/all-in-one deploy
-kolla-ansible -i ~/all-in-one post-deploy
+kolla-ansible bootstrap-servers -i ~/all-in-one
+kolla-ansible prechecks -i ~/all-in-one
+kolla-ansible deploy -i ~/all-in-one
+kolla-ansible post-deploy -i ~/all-in-one
 ```
 
 ---
@@ -106,7 +106,7 @@ kolla-ansible -i ~/all-in-one post-deploy
 
 ```bash
 source ~/kolla-venv/bin/activate
-kolla-ansible -i ~/all-in-one destroy --yes-i-really-really-mean-it
+kolla-ansible destroy -i ~/all-in-one --yes-i-really-really-mean-it
 ```
 
 ---

@@ -108,7 +108,7 @@ sudo modprobe overlay
 docker logs <container_name>
 
 # 실패한 단계부터 재시도
-kolla-ansible -i ~/all-in-one deploy
+kolla-ansible deploy -i ~/all-in-one
 ```
 
 ---
@@ -212,7 +212,7 @@ sudo mkswap /swapfile2
 sudo swapon /swapfile2
 
 # 불필요한 서비스 비활성화 (globals.yml 수정 후)
-kolla-ansible -i ~/all-in-one reconfigure
+kolla-ansible reconfigure -i ~/all-in-one
 ```
 
 ---
