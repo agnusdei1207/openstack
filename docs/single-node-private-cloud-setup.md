@@ -1,7 +1,8 @@
 # Kolla-Ansible 단일 노드 OpenStack 설치 가이드
 
 > NHN Cloud m2.c4m8 (4vCPU, 8GB RAM) 환경  
-> Docker 컨테이너 기반으로 OS 레벨 설정 최소화
+> Docker 컨테이너 기반으로 OS 레벨 설정 최소화  
+> **Ubuntu 24.04 (Noble)** + **Kolla-Ansible 20.x** + **OpenStack 2025.1 (Epoxy)**
 
 ---
 
@@ -124,6 +125,15 @@ echo "127.0.0.1 openstack" | sudo tee -a /etc/hosts
 
 ## Kolla-Ansible 설치
 
+> ⚠️ **버전 호환성 주의**
+>
+> | Kolla-Ansible | Ubuntu            | OpenStack        |
+> | ------------- | ----------------- | ---------------- |
+> | **20.x**      | **24.04 (Noble)** | 2025.1 (Epoxy)   |
+> | 18.x          | 22.04 (Jammy)     | 2024.1 (Caracal) |
+>
+> 이 가이드는 **Ubuntu 24.04 + Kolla-Ansible 20.x** 기준입니다.
+
 ### 1. Python 가상환경 생성
 
 ```bash
@@ -141,11 +151,11 @@ pip install -U pip
 ### 2. Kolla-Ansible 설치
 
 ```bash
-# Kolla-Ansible과 호환되는 Ansible 버전 설치
-# (2.14 이상 2.16 미만 버전만 지원)
-pip install 'ansible-core>=2.14,<2.16'
+# Kolla-Ansible과 호환되는 Ansible 버전 설치 (2.16 이상 2.18 미만)
+pip install 'ansible-core>=2.16,<2.18'
 
-# Kolla-Ansible 설치 (OpenStack 배포 자동화 도구)
+# Kolla-Ansible 최신 버전 설치 (Ubuntu 24.04 전용)
+# Ubuntu 22.04를 사용한다면: pip install 'kolla-ansible>=18,<19'
 pip install kolla-ansible
 ```
 
@@ -173,30 +183,15 @@ cp ~/kolla-venv/share/kolla-ansible/ansible/inventory/all-in-one ~/
 ip a
 ```
 
-1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN group default qlen 1000
-link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
-inet 127.0.0.1/8 scope host lo
-valid_lft forever preferred_lft forever
-inet6 ::1/128 scope host
-valid_lft forever preferred_lft forever
-2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc mq state UP group default qlen 1000
-link/ether fa:16:3e:f1:36:d2 brd ff:ff:ff:ff:ff:ff
-altname enp0s3
-altname ens3
-inet 192.168.0.92/24 metric 100 brd 192.168.0.255 scope global dynamic eth0
-valid_lft 85910sec preferred_lft 85910sec
-inet6 fe80::f816:3eff:fef1:36d2/64 scope link
-valid_lft forever preferred_lft forever
-
 ```bash
 cat > /etc/kolla/globals.yml << 'EOF'
 ---
 # 기본 설정
 kolla_base_distro: "ubuntu"
 kolla_install_type: "source"
-openstack_release: "2024.2"
+openstack_release: "2025.1"  # Ubuntu 24.04 + Kolla 20.x = 2025.1 (Epoxy)
 
-# 네트워크 인터페이스 (ip a로 확인한 값 입력)
+# 네트워크 인터페이스 (ip a로 확인한 이름 입력, 예: eth0, ens3, enp0s3 등)
 network_interface: "eth0"
 neutron_external_interface: "eth0"
 kolla_internal_vip_address: "127.0.0.1"
@@ -275,14 +270,16 @@ grep keystone_admin_password /etc/kolla/passwords.yml
 ```bash
 # Kolla-Ansible 실행에 필요한 Ansible Galaxy 역할들 설치
 kolla-ansible install-deps
+# 에러 없는지 설치 리스트 확인
+ansible-galaxy collection list
 ```
 
 ### 2. Bootstrap (Docker 자동 설치)
 
 ```bash
 # 서버 초기 설정 (Docker 설치, 사용자 권한 설정 등)
-# -i: 인벤토리 파일 지정 (배포 대상 서버 목록)
-kolla-ansible -i ~/all-in-one bootstrap-servers
+# 명령어가 먼저, -i 옵션은 뒤에 (Kolla-Ansible 20.x 문법)
+kolla-ansible bootstrap-servers -i ~/all-in-one
 ```
 
 > ✅ 이 단계에서 Docker가 자동으로 설치됩니다!
@@ -291,7 +288,7 @@ kolla-ansible -i ~/all-in-one bootstrap-servers
 
 ```bash
 # 배포 전 시스템 요구사항 검증 (포트 충돌, 설정 오류 등 체크)
-kolla-ansible -i ~/all-in-one prechecks
+kolla-ansible prechecks -i ~/all-in-one
 ```
 
 > 에러가 있으면 수정 후 다시 실행
@@ -300,14 +297,14 @@ kolla-ansible -i ~/all-in-one prechecks
 
 ```bash
 # 실제 OpenStack 컨테이너들 배포 (모든 서비스 설치 및 실행)
-kolla-ansible -i ~/all-in-one deploy
+kolla-ansible deploy -i ~/all-in-one
 ```
 
 ### 5. 후처리
 
 ```bash
 # 배포 후 작업 (admin-openrc.sh 생성 등 환경 설정 파일 생성)
-kolla-ansible -i ~/all-in-one post-deploy
+kolla-ansible post-deploy -i ~/all-in-one
 ```
 
 ---
@@ -406,18 +403,18 @@ docker logs horizon
 
 ```bash
 # globals.yml 수정 후 변경사항 적용 (전체 재배포 없이)
-kolla-ansible -i ~/all-in-one reconfigure
+kolla-ansible reconfigure -i ~/all-in-one
 
 # 특정 서비스만 재배포 (--tags로 서비스 지정)
-kolla-ansible -i ~/all-in-one deploy --tags nova
-kolla-ansible -i ~/all-in-one deploy --tags horizon
+kolla-ansible deploy -i ~/all-in-one --tags nova
+kolla-ansible deploy -i ~/all-in-one --tags horizon
 ```
 
 ### 완전 삭제 (초기화)
 
 ```bash
 # ⚠️ 주의: 모든 OpenStack 컨테이너와 데이터 완전 삭제!
-kolla-ansible -i ~/all-in-one destroy --yes-i-really-really-mean-it
+kolla-ansible destroy -i ~/all-in-one --yes-i-really-really-mean-it
 ```
 
 ### 업그레이드
@@ -427,7 +424,7 @@ kolla-ansible -i ~/all-in-one destroy --yes-i-really-really-mean-it
 pip install -U kolla-ansible
 
 # OpenStack 서비스들 업그레이드 (다운타임 최소화)
-kolla-ansible -i ~/all-in-one upgrade
+kolla-ansible upgrade -i ~/all-in-one
 ```
 
 ---
