@@ -152,6 +152,9 @@ sudo apt install -y docker-ce docker-ce-cli containerd.io
 sudo usermod -aG docker $USER
 newgrp docker
 
+# 나갔다 다시 들어오기
+exit
+
 # Docker 설치 확인
 docker --version
 docker ps

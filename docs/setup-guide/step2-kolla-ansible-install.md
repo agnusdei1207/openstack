@@ -56,8 +56,6 @@ kolla-ansible --version
 ansible --version
 ```
 
-> 💡 **Ubuntu 24.04 사용 시**: `pip install 'ansible-core>=2.16,<2.18' && pip install kolla-ansible`
-
 ---
 
 ## 3. 설정 파일 준비
@@ -107,12 +105,13 @@ kolla_base_distro: "ubuntu"
 kolla_install_type: "source"
 openstack_release: "2024.2"
 
-# 네트워크 인터페이스 (ip a로 확인한 이름 입력)
-# 예: eth0, ens3, enp0s3 등
+# 네트워크 인터페이스 (ip a로 확인한 이름 입력) eth0, ens3, enp0s3 등
+# Management + API 통신
 network_interface: "eth0"
 
 # 외부 네트워크 인터페이스 (Floating IP용 - Step 1에서 생성한 더미 인터페이스)
 # Neutron이 이 인터페이스를 브릿지에 연결하여 외부 네트워크 제공
+# 외부 네트워크, Floating IP
 neutron_external_interface: "eth1"
 
 # 내부 VIP 주소 (단일 노드는 localhost)
@@ -201,7 +200,7 @@ kolla-genpwd
 
 # Horizon 웹 대시보드 로그인용 admin 패스워드 확인
 grep keystone_admin_password /etc/kolla/passwords.yml
-# 출력 예: keystone_admin_password: mtuYcEIay6dUuz6CeHDRtdZfcKauMmu0YbkCzN1X
+# 출력 예: keystone_admin_password: 000mm8zFveQtxRoiN4NBZUrRfw3mA56MgKQTbAhn
 ```
 
 > 💡 **Tip**: 이 패스워드를 따로 메모해두세요! Horizon 로그인 시 필요합니다.

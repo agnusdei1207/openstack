@@ -24,6 +24,7 @@
 source ~/kolla-venv/bin/activate
 
 # Kolla-Ansible 실행에 필요한 Ansible Galaxy 역할들 설치
+# 네트워크 이슈가 많아서 실패 시 재실행
 kolla-ansible install-deps
 
 # 설치 확인 (에러 없는지 확인)
