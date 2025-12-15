@@ -104,6 +104,58 @@ localhost                  : ok=XXX  changed=XX   unreachable=0    failed=0
 
 > ⏱️ **소요 시간**: 첫 배포는 Docker 이미지 다운로드로 인해 20-40분 소요됩니다.
 
+### 배포 중 자주 발생하는 에러
+
+#### MariaDB ProxySQL 인증 에러
+
+```
+ERROR 1045 (28000): ProxySQL Error: Access denied for user 'root_shard_0'@'127.0.0.1' (using password: YES)
+```
+
+이 에러는 MariaDB 배포 후 VIP 연결 확인 단계에서 발생합니다.
+
+**원인**: ProxySQL 사용자 동기화 실패
+
+**해결 방법 1: MariaDB 재설정 (권장)**
+
+```bash
+source ~/kolla-venv/bin/activate
+
+# MariaDB만 재설정
+kolla-ansible reconfigure -i ~/all-in-one -t mariadb
+
+# 후처리 재실행
+kolla-ansible post-deploy -i ~/all-in-one
+```
+
+**해결 방법 2: 완전 재배포**
+
+```bash
+source ~/kolla-venv/bin/activate
+
+# MariaDB 정지 및 볼륨 삭제
+docker stop mariadb
+docker rm mariadb
+docker volume rm mariadb
+
+# MariaDB만 재배포
+kolla-ansible deploy -i ~/all-in-one -t mariadb
+
+# 후처리
+kolla-ansible post-deploy -i ~/all-in-one
+```
+
+**해결 방법 3: 전체 재배포 (최후 수단)**
+
+```bash
+source ~/kolla-venv/bin/activate
+
+# 전체 삭제 후 재배포
+kolla-ansible destroy -i ~/all-in-one --yes-i-really-really-mean-it
+kolla-ansible deploy -i ~/all-in-one
+kolla-ansible post-deploy -i ~/all-in-one
+```
+
 ---
 
 ## 5. 후처리
