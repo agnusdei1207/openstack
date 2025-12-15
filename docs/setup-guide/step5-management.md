@@ -89,16 +89,16 @@ openstack hypervisor list
 source ~/kolla-venv/bin/activate
 
 # globals.yml 수정 후 변경사항 적용 (전체 재배포 없이)
-kolla-ansible -i ~/all-in-one reconfigure
+kolla-ansible reconfigure -i ~/all-in-one
 ```
 
 ### 특정 서비스 재배포
 
 ```bash
 # 특정 서비스만 재배포 (--tags로 서비스 지정)
-kolla-ansible -i ~/all-in-one deploy --tags nova
-kolla-ansible -i ~/all-in-one deploy --tags neutron
-kolla-ansible -i ~/all-in-one deploy --tags horizon
+kolla-ansible deploy -i ~/all-in-one --tags nova
+kolla-ansible deploy -i ~/all-in-one --tags neutron
+kolla-ansible deploy -i ~/all-in-one --tags horizon
 ```
 
 ### 개별 컨테이너 재시작
@@ -130,8 +130,8 @@ docker start $(docker ps -aq)
 # 가상환경 활성화
 source ~/kolla-venv/bin/activate
 
-kolla-ansible -i ~/all-in-one stop
-kolla-ansible -i ~/all-in-one deploy
+kolla-ansible stop -i ~/all-in-one
+kolla-ansible deploy -i ~/all-in-one
 ```
 
 ---
@@ -146,7 +146,7 @@ kolla-ansible -i ~/all-in-one deploy
 source ~/kolla-venv/bin/activate
 
 # 완전 삭제 실행
-kolla-ansible -i ~/all-in-one destroy --yes-i-really-really-mean-it
+kolla-ansible destroy -i ~/all-in-one --yes-i-really-really-mean-it
 ```
 
 ### Docker 레벨 정리 (선택사항)

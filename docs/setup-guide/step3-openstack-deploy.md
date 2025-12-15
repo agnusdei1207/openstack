@@ -31,24 +31,12 @@ kolla-ansible install-deps
 ansible-galaxy collection list
 ```
 
-**출력 예시:**
-
-```
-# /home/ubuntu/kolla-venv/lib/python3.10/site-packages/ansible_collections
-Collection        Version
------------------ -------
-ansible.posix     1.5.4
-community.general 8.0.0
-```
-
----
-
 ## 2. Bootstrap (서버 초기 설정)
 
 ```bash
 # 서버 초기 설정 (Docker 설정, 사용자 권한 등)
 # Docker를 수동 설치했다면 이 단계는 주로 권한 설정만 수행
-kolla-ansible -i ~/all-in-one bootstrap-servers
+kolla-ansible bootstrap-servers -i ~/all-in-one
 ```
 
 > ✅ Docker를 수동 설치하지 않았다면 이 단계에서 자동으로 설치됩니다!
@@ -66,7 +54,7 @@ localhost                  : ok=XX   changed=XX   unreachable=0    failed=0
 
 ```bash
 # 배포 전 시스템 요구사항 검증 (포트 충돌, 설정 오류 등 체크)
-kolla-ansible -i ~/all-in-one prechecks
+kolla-ansible prechecks -i ~/all-in-one
 ```
 
 **정상 출력:**
@@ -92,7 +80,7 @@ localhost                  : ok=XX   changed=0    unreachable=0    failed=0
 
 ```bash
 # 실제 OpenStack 컨테이너들 배포 (모든 서비스 설치 및 실행)
-kolla-ansible -i ~/all-in-one deploy
+kolla-ansible deploy -i ~/all-in-one
 ```
 
 **진행 상황 예시:**
@@ -122,7 +110,7 @@ localhost                  : ok=XXX  changed=XX   unreachable=0    failed=0
 
 ```bash
 # 배포 후 작업 (admin-openrc.sh 생성 등 환경 설정 파일 생성)
-kolla-ansible -i ~/all-in-one post-deploy
+kolla-ansible post-deploy -i ~/all-in-one
 ```
 
 **생성되는 파일:**
@@ -173,13 +161,13 @@ memcached                Up 6 minutes
 source ~/kolla-venv/bin/activate
 
 # 1. 현재 상태 정리
-kolla-ansible -i ~/all-in-one stop
+kolla-ansible stop -i ~/all-in-one
 
 # 2. 사전 검증 다시 실행
-kolla-ansible -i ~/all-in-one prechecks
+kolla-ansible prechecks -i ~/all-in-one
 
 # 3. 배포 재시도
-kolla-ansible -i ~/all-in-one deploy
+kolla-ansible deploy -i ~/all-in-one
 ```
 
 ### 특정 서비스만 재배포
@@ -189,11 +177,11 @@ kolla-ansible -i ~/all-in-one deploy
 source ~/kolla-venv/bin/activate
 
 # 특정 서비스만 재배포 (--tags로 서비스 지정)
-kolla-ansible -i ~/all-in-one deploy --tags nova
-kolla-ansible -i ~/all-in-one deploy --tags neutron
-kolla-ansible -i ~/all-in-one deploy --tags horizon
-kolla-ansible -i ~/all-in-one deploy --tags keystone
-kolla-ansible -i ~/all-in-one deploy --tags glance
+kolla-ansible deploy -i ~/all-in-one --tags nova
+kolla-ansible deploy -i ~/all-in-one --tags neutron
+kolla-ansible deploy -i ~/all-in-one --tags horizon
+kolla-ansible deploy -i ~/all-in-one --tags keystone
+kolla-ansible deploy -i ~/all-in-one --tags glance
 ```
 
 ### 특정 컨테이너 재시작
@@ -221,7 +209,7 @@ docker logs nova_compute --tail 100
 source ~/kolla-venv/bin/activate
 
 # 완전 삭제 실행
-kolla-ansible -i ~/all-in-one destroy --yes-i-really-really-mean-it
+kolla-ansible destroy -i ~/all-in-one --yes-i-really-really-mean-it
 
 # Docker 이미지도 삭제하려면 (선택사항)
 docker image prune -a
@@ -253,22 +241,22 @@ docker volume rm $(docker volume ls -q --filter "name=kolla")
 source ~/kolla-venv/bin/activate
 
 # 1. 완전 삭제
-kolla-ansible -i ~/all-in-one destroy --yes-i-really-really-mean-it
+kolla-ansible destroy -i ~/all-in-one --yes-i-really-really-mean-it
 
 # 2. 의존성 재설치
 kolla-ansible install-deps
 
 # 3. Bootstrap
-kolla-ansible -i ~/all-in-one bootstrap-servers
+kolla-ansible bootstrap-servers -i ~/all-in-one
 
 # 4. 사전 검증
-kolla-ansible -i ~/all-in-one prechecks
+kolla-ansible prechecks -i ~/all-in-one
 
 # 5. 배포
-kolla-ansible -i ~/all-in-one deploy
+kolla-ansible deploy -i ~/all-in-one
 
 # 6. 후처리
-kolla-ansible -i ~/all-in-one post-deploy
+kolla-ansible post-deploy -i ~/all-in-one
 ```
 
 ---
