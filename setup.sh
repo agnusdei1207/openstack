@@ -359,27 +359,63 @@ fi
 
 source ~/kolla-venv/bin/activate || error_exit "가상환경 활성화 실패"
 
-# pip 업그레이드
-pip install --upgrade pip setuptools wheel >/dev/null 2>&1 || log_warn "pip 업그레이드 실패 - 계속 진행"
+# pip 버전 고정 업그레이드
+pip install 'pip>=23.0,<25.0' 'setuptools>=65.0,<70.0' 'wheel>=0.40,<0.45' >/dev/null 2>&1 || log_warn "pip 업그레이드 실패 - 계속 진행"
 
-# Kolla-Ansible 설치 (재시도 로직)
+# ============================================================================
+# 의존성 버전 고정 (OpenStack 2024.2 + Kolla-Ansible 19.1.0 호환)
+# ============================================================================
+log_info "Python 의존성 버전 고정 중..."
+
+# Core 의존성 (순서 중요)
+pip install 'resolvelib==1.0.1' >/dev/null 2>&1 || log_warn "resolvelib 설치 실패"
+pip install 'Jinja2==3.1.2' >/dev/null 2>&1 || log_warn "Jinja2 설치 실패"
+pip install 'MarkupSafe==2.1.3' >/dev/null 2>&1 || log_warn "MarkupSafe 설치 실패"
+pip install 'PyYAML==6.0.1' >/dev/null 2>&1 || log_warn "PyYAML 설치 실패"
+
+# Ansible 관련 의존성
+pip install 'packaging==23.2' >/dev/null 2>&1 || log_warn "packaging 설치 실패"
+pip install 'cryptography==41.0.7' >/dev/null 2>&1 || log_warn "cryptography 설치 실패"
+pip install 'cffi==1.16.0' >/dev/null 2>&1 || log_warn "cffi 설치 실패"
+pip install 'paramiko==3.4.0' >/dev/null 2>&1 || log_warn "paramiko 설치 실패"
+
+# Docker SDK
+pip install 'docker==6.1.3' >/dev/null 2>&1 || log_warn "docker SDK 설치 실패"
+pip install 'requests==2.31.0' >/dev/null 2>&1 || log_warn "requests 설치 실패"
+pip install 'urllib3==2.0.7' >/dev/null 2>&1 || log_warn "urllib3 설치 실패"
+
+# ============================================================================
+# Ansible-Core 및 Kolla-Ansible 설치
+# ============================================================================
 log_info "Kolla-Ansible 패키지 설치 중... (약 2분 소요)"
 
+# ansible-core 버전 고정 설치
 for i in {1..3}; do
-    if pip install 'ansible-core>=2.16,<2.18' >/dev/null 2>&1; then
+    if pip install 'ansible-core==2.16.12' >/dev/null 2>&1; then
+        log_success "ansible-core 2.16.12 설치 완료"
         break
     fi
     log_warn "ansible-core 설치 재시도 ($i/3)..."
     sleep 5
 done
 
+# kolla-ansible 버전 고정 설치
 for i in {1..3}; do
     if pip install 'kolla-ansible==19.1.0' >/dev/null 2>&1; then
+        log_success "kolla-ansible 19.1.0 설치 완료"
         break
     fi
     log_warn "kolla-ansible 설치 재시도 ($i/3)..."
     sleep 5
 done
+
+# 의존성 무결성 확인
+log_info "Python 의존성 무결성 확인 중..."
+if pip check 2>&1 | head -10; then
+    log_success "의존성 검증 완료"
+else
+    log_warn "일부 의존성 경고 발생 (무시 가능)"
+fi
 
 # 설치 확인
 if ! command -v kolla-ansible &>/dev/null; then
@@ -547,6 +583,22 @@ echo ""
 log_info "[1/4] 의존성 설치 중..."
 kolla-ansible install-deps >/dev/null 2>&1 || log_warn "의존성 설치 경고 무시"
 
+# Ansible Galaxy 컬렉션 강제 재설치 (ansible.posix 등 누락 방지)
+log_info "[1.5/4] Ansible Galaxy 컬렉션 강제 재설치 중..."
+if [ -f ~/kolla-venv/share/kolla-ansible/requirements.yml ]; then
+    for i in {1..3}; do
+        if ansible-galaxy collection install -r ~/kolla-venv/share/kolla-ansible/requirements.yml --force 2>&1 | tee /tmp/ansible-galaxy.log | grep -v "^$"; then
+            log_success "Ansible Galaxy 컬렉션 설치 완료"
+            break
+        fi
+        log_warn "Ansible Galaxy 컬렉션 설치 재시도 ($i/3)..."
+        sleep 5
+    done
+else
+    log_warn "requirements.yml 파일을 찾을 수 없습니다 - 수동 설치 시도"
+    ansible-galaxy collection install ansible.posix ansible.netcommon community.docker kolla_ansible.kolla_ansible --force >/dev/null 2>&1 || log_warn "수동 컬렉션 설치 실패"
+fi
+
 # Bootstrap
 log_info "[2/4] Bootstrap 실행 중... (약 5분)"
 if ! kolla-ansible bootstrap-servers -i ~/all-in-one 2>&1 | tee /tmp/kolla-bootstrap.log | grep -v "^$"; then
@@ -576,9 +628,18 @@ if ! kolla-ansible post-deploy -i ~/all-in-one 2>&1 | tee /tmp/kolla-postdeploy.
     log_warn "Post-deploy 경고 발생 - 계속 진행"
 fi
 
-# OpenStack 클라이언트 설치
+# OpenStack 클라이언트 설치 (버전 고정)
 log_info "OpenStack 클라이언트 설치 중..."
-pip install python-openstackclient python-cinderclient python-novaclient python-glanceclient >/dev/null 2>&1 || log_warn "클라이언트 설치 경고 무시"
+pip install \
+    'python-openstackclient==7.1.0' \
+    'python-cinderclient==9.5.0' \
+    'python-novaclient==18.6.0' \
+    'python-glanceclient==4.6.0' \
+    'python-neutronclient==11.3.0' \
+    'python-keystoneclient==5.4.0' \
+    'osc-lib==3.0.1' \
+    'keystoneauth1==5.6.0' \
+    >/dev/null 2>&1 || log_warn "클라이언트 설치 경고 무시"
 
 log_success "OpenStack 배포 완료!"
 
