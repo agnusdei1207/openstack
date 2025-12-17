@@ -33,11 +33,24 @@ fi
 
 if [ -z "${1:-}" ]; then
     log_error "외부 IP를 입력해주세요."
-    echo "사용법: $0 <외부_IP>"
+    echo "사용법: $0 <외부_IP> [도메인명]"
+    echo "예시: $0 133.186.146.47"
+    echo "예시: $0 133.186.146.47 openstack.example.com"
+    echo ""
+    echo "도메인을 입력하면 Let's Encrypt SSL 인증서가 자동으로 설정됩니다."
     exit 1
 fi
 
 EXTERNAL_IP="$1"
+DOMAIN_NAME="${2:-}"
+
+# 도메인 입력 시 유효성 검증
+if [ -n "$DOMAIN_NAME" ]; then
+    if ! [[ $DOMAIN_NAME =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$ ]]; then
+        error_exit "올바른 도메인 형식이 아닙니다: $DOMAIN_NAME"
+    fi
+    log_info "HTTPS 설정 활성화 (도메인: $DOMAIN_NAME)"
+fi
 
 # IP 형식 검증
 if ! [[ $EXTERNAL_IP =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
@@ -98,6 +111,7 @@ apt-get install -y \
     pkg-config \
     libdbus-1-dev \
     libglib2.0-dev \
+    certbot \
     2>/dev/null || log_warn "일부 패키지 설치 실패 (계속 진행)"
 
 # 시간 동기화
@@ -544,6 +558,7 @@ fi
 cat > ~/openstack-credentials.txt <<EOF
 # OpenStack 관리자 계정 정보
 URL: http://$EXTERNAL_IP
+$([ -n "$DOMAIN_NAME" ] && echo "HTTPS URL: https://$DOMAIN_NAME")
 Username: admin
 Password: $ADMIN_PASSWORD
 Project: admin
@@ -672,7 +687,151 @@ else
 fi
 
 ###############################################################################
-# 11. 완료 메시지
+# 11. SSL/HTTPS 설정 (Let's Encrypt)
+###############################################################################
+if [ -n "$DOMAIN_NAME" ]; then
+    log_info "Step 9: SSL/HTTPS 설정 중 (Let's Encrypt)..."
+    
+    # Nginx 설치 (리버스 프록시용)
+    apt-get install -y nginx >/dev/null 2>&1 || log_warn "Nginx 설치 경고"
+    
+    # Nginx 기본 설정 백업
+    if [ -f /etc/nginx/sites-enabled/default ]; then
+        rm /etc/nginx/sites-enabled/default 2>/dev/null || true
+    fi
+    
+    # 일시적으로 HTTP 서버 설정 (인증서 발급용)
+    cat > /etc/nginx/sites-available/openstack-temp <<EOF
+server {
+    listen 80;
+    server_name $DOMAIN_NAME;
+    
+    location /.well-known/acme-challenge/ {
+        root /var/www/html;
+    }
+    
+    location / {
+        return 301 https://\$server_name\$request_uri;
+    }
+}
+EOF
+    
+    ln -sf /etc/nginx/sites-available/openstack-temp /etc/nginx/sites-enabled/
+    systemctl restart nginx >/dev/null 2>&1 || log_warn "Nginx 재시작 경고"
+    
+    # Let's Encrypt 인증서 발급
+    log_info "Let's Encrypt SSL 인증서 발급 중..."
+    if certbot certonly --webroot -w /var/www/html -d "$DOMAIN_NAME" --non-interactive --agree-tos --register-unsafely-without-email 2>&1 | tee /tmp/certbot.log; then
+        log_success "SSL 인증서 발급 완료"
+        SSL_ENABLED=true
+    else
+        log_warn "SSL 인증서 발급 실패 - HTTP로 계속 진행"
+        log_warn "수동으로 발급: certbot certonly --standalone -d $DOMAIN_NAME"
+        SSL_ENABLED=false
+    fi
+    
+    if [ "$SSL_ENABLED" = true ]; then
+        # HTTPS Nginx 설정
+        cat > /etc/nginx/sites-available/openstack <<EOF
+server {
+    listen 80;
+    server_name $DOMAIN_NAME;
+    
+    location /.well-known/acme-challenge/ {
+        root /var/www/html;
+    }
+    
+    location / {
+        return 301 https://\$server_name\$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl http2;
+    server_name $DOMAIN_NAME;
+    
+    ssl_certificate /etc/letsencrypt/live/$DOMAIN_NAME/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN_NAME/privkey.pem;
+    
+    # SSL 보안 설정
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers on;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 1d;
+    ssl_session_tickets off;
+    
+    # HSTS
+    add_header Strict-Transport-Security "max-age=63072000" always;
+    
+    # Horizon (OpenStack Dashboard) 프록시
+    location / {
+        proxy_pass http://127.0.0.1:80;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_read_timeout 300;
+        proxy_connect_timeout 300;
+        
+        # WebSocket 지원 (VNC 콘솔 등)
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+}
+EOF
+        
+        # 임시 설정 제거 및 새 설정 적용
+        rm -f /etc/nginx/sites-enabled/openstack-temp
+        ln -sf /etc/nginx/sites-available/openstack /etc/nginx/sites-enabled/
+        
+        # Nginx 설정 검증 및 재시작
+        if nginx -t 2>/dev/null; then
+            systemctl restart nginx
+            log_success "Nginx HTTPS 프록시 설정 완료"
+        else
+            log_warn "Nginx 설정 오류 - 수동 확인 필요"
+        fi
+        
+        # 매일 자정 인증서 갱신 cron 작업 설정
+        log_info "인증서 자동 갱신 cron 작업 설정 중..."
+        
+        # 인증서 갱신 스크립트 생성
+        cat > /etc/cron.daily/certbot-renew <<'RENEW_EOF'
+#!/bin/bash
+# Let's Encrypt 인증서 자동 갱신 스크립트
+# 매일 자정에 실행
+
+LOGFILE="/var/log/certbot-renew.log"
+echo "$(date): 인증서 갱신 시도 시작" >> $LOGFILE
+
+/usr/bin/certbot renew --quiet --deploy-hook "systemctl reload nginx" >> $LOGFILE 2>&1
+
+if [ $? -eq 0 ]; then
+    echo "$(date): 인증서 갱신 완료" >> $LOGFILE
+else
+    echo "$(date): 인증서 갱신 실패 또는 갱신 불필요" >> $LOGFILE
+fi
+RENEW_EOF
+        
+        chmod +x /etc/cron.daily/certbot-renew
+        
+        # 정확히 자정에 실행되도록 crontab 설정
+        (crontab -l 2>/dev/null | grep -v certbot; echo "0 0 * * * /etc/cron.daily/certbot-renew") | crontab -
+        
+        log_success "인증서 자동 갱신 설정 완료 (매일 자정)"
+        
+        HORIZON_URL="https://$DOMAIN_NAME"
+    else
+        HORIZON_URL="http://$EXTERNAL_IP"
+    fi
+else
+    HORIZON_URL="http://$EXTERNAL_IP"
+fi
+
+###############################################################################
+# 12. 완료 메시지
 ###############################################################################
 echo ""
 echo -e "${GREEN}========================================${NC}"
@@ -680,10 +839,22 @@ echo -e "${GREEN}    🎉 OpenStack AIO 설치 완료! 🎉${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
 echo -e "${BLUE}📌 접속 정보${NC}"
-echo -e "   Horizon URL: ${YELLOW}http://$EXTERNAL_IP${NC}"
+echo -e "   Horizon URL: ${YELLOW}$HORIZON_URL${NC}"
+if [ -n "$DOMAIN_NAME" ] && [ "$SSL_ENABLED" = true ]; then
+    echo -e "   (HTTP -> HTTPS 자동 리다이렉트)"
+fi
 echo -e "   Username: ${YELLOW}admin${NC}"
 echo -e "   Password: ${YELLOW}$ADMIN_PASSWORD${NC}"
 echo ""
+if [ -n "$DOMAIN_NAME" ] && [ "$SSL_ENABLED" = true ]; then
+    echo -e "${BLUE}📌 SSL 인증서 (Let's Encrypt)${NC}"
+    echo -e "   도메인: ${YELLOW}$DOMAIN_NAME${NC}"
+    echo -e "   인증서: ${YELLOW}/etc/letsencrypt/live/$DOMAIN_NAME/${NC}"
+    echo -e "   자동 갱신: ${YELLOW}매일 자정 (0시 0분)${NC}"
+    echo -e "   갱신 로그: ${YELLOW}/var/log/certbot-renew.log${NC}"
+    echo -e "   수동 갱신: ${YELLOW}certbot renew${NC}"
+    echo ""
+fi
 echo -e "${BLUE}📌 Cinder 볼륨${NC}"
 echo -e "   Volume Group: ${YELLOW}cinder${NC}"
 echo -e "   크기: ${YELLOW}20GB${NC}"
@@ -707,6 +878,9 @@ echo -e "${BLUE}📌 문제 발생 시${NC}"
 echo -e "   Bootstrap 로그: ${YELLOW}/tmp/kolla-bootstrap.log${NC}"
 echo -e "   Prechecks 로그: ${YELLOW}/tmp/kolla-prechecks.log${NC}"
 echo -e "   Deploy 로그: ${YELLOW}/tmp/kolla-deploy.log${NC}"
+if [ -n "$DOMAIN_NAME" ]; then
+    echo -e "   Certbot 로그: ${YELLOW}/tmp/certbot.log${NC}"
+fi
 echo ""
 echo -e "${GREEN}설치가 완료되었습니다!${NC}"
 echo
