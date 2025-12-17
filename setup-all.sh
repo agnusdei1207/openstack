@@ -171,6 +171,7 @@ fi
 MAIN_INTERFACE=$(ip route | grep default | awk '{print $5}' | head -1)
 
 # globals.yml 작성 (최적화 + 타임아웃 방지 풀세트)
+# 단일 호스트라 enable_mariadb_sharding 비활성
 cat > /etc/kolla/globals.yml << EOF
 ---
 kolla_base_distro: "ubuntu"
@@ -184,6 +185,7 @@ kolla_external_vip_address: "$EXTERNAL_IP"
 
 enable_haproxy: "no"
 enable_mariadb_sharding: "no"
+enable_proxysql: "no"
 enable_keystone: "yes"
 enable_glance: "yes"
 enable_nova: "yes"
