@@ -95,6 +95,9 @@ apt-get install -y \
     gnupg \
     lsb-release \
     software-properties-common \
+    pkg-config \
+    libdbus-1-dev \
+    libglib2.0-dev \
     2>/dev/null || log_warn "일부 패키지 설치 실패 (계속 진행)"
 
 # 시간 동기화
@@ -372,6 +375,7 @@ pip install 'resolvelib==1.0.1' >/dev/null 2>&1 || log_warn "resolvelib 설치 �
 pip install 'Jinja2==3.1.2' >/dev/null 2>&1 || log_warn "Jinja2 설치 실패"
 pip install 'MarkupSafe==2.1.3' >/dev/null 2>&1 || log_warn "MarkupSafe 설치 실패"
 pip install 'PyYAML==6.0.1' >/dev/null 2>&1 || log_warn "PyYAML 설치 실패"
+pip install 'dbus-python>=1.3.2' >/dev/null 2>&1 || log_warn "dbus-python 설치 실패"
 
 # Ansible 관련 의존성
 pip install 'packaging==23.2' >/dev/null 2>&1 || log_warn "packaging 설치 실패"
@@ -596,8 +600,11 @@ if [ -f ~/kolla-venv/share/kolla-ansible/requirements.yml ]; then
     done
 else
     log_warn "requirements.yml 파일을 찾을 수 없습니다 - 수동 설치 시도"
-    ansible-galaxy collection install ansible.posix ansible.netcommon community.docker kolla_ansible.kolla_ansible --force >/dev/null 2>&1 || log_warn "수동 컬렉션 설치 실패"
 fi
+
+# ansible.utils 컬렉션 필수 설치 (ipaddr 필터 필요)
+log_info "필수 Ansible 컬렉션 추가 설치 중..."
+ansible-galaxy collection install ansible.posix ansible.netcommon ansible.utils community.docker --force >/dev/null 2>&1 || log_warn "추가 컬렉션 설치 경고"
 
 # Bootstrap
 log_info "[2/4] Bootstrap 실행 중... (약 5분)"
