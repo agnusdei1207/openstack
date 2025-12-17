@@ -1,7 +1,7 @@
 #!/bin/bash
 ###############################################################################
 # OpenStack AIO 설치 스크립트 (Ref: CodingPenguin Blog Version)
-# NHN Cloud m2.c4m8 (4vCPU, 8GB RAM) + Ubuntu 22.04
+# NHN Cloud m2.c4m8 (8vCPU, 16GB RAM) + Ubuntu 22.04
 #
 # [블로그 내용 반영 및 수정 사항]
 # 1. LVM Cinder 구성: 실제 파티션 대신 'loopback file'을 사용하여 가상 LVM 구현
