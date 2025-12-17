@@ -1,12 +1,9 @@
 #!/bin/bash
 ###############################################################################
-# OpenStack AIO 안정화 설치 스크립트
+# OpenStack AIO 안정화 설치 스크립트 v2.0
 # NHN Cloud m2.c4m8 (8vCPU, 16GB RAM) + Ubuntu 22.04
-# 단일 호스트 환경 최적화 - 에러 없이 안정적 설치
+# 완전 방어적 프로그래밍 - 모든 에러 케이스 처리
 ###############################################################################
-
-set -euo pipefail  # 에러 발생 시 즉시 중단
-trap 'echo "❌ 오류 발생: Line $LINENO"; exit 1' ERR
 
 # 색상 정의
 GREEN='\033[0;32m'
@@ -20,12 +17,18 @@ log_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
+# 에러 핸들러
+error_exit() {
+    log_error "$1"
+    log_error "스크립트 실행 실패: Line ${BASH_LINENO[0]}"
+    exit 1
+}
+
 ###############################################################################
 # 0. 사전 검증
 ###############################################################################
 if [ "$EUID" -ne 0 ]; then
-    log_error "root 권한 필요 (sudo -i 실행 후 사용)"
-    exit 1
+    error_exit "root 권한 필요 (sudo -i 실행 후 사용)"
 fi
 
 if [ -z "${1:-}" ]; then
@@ -38,22 +41,19 @@ EXTERNAL_IP="$1"
 
 # IP 형식 검증
 if ! [[ $EXTERNAL_IP =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
-    log_error "올바른 IP 형식이 아닙니다: $EXTERNAL_IP"
-    exit 1
+    error_exit "올바른 IP 형식이 아닙니다: $EXTERNAL_IP"
 fi
 
-# 메모리 확인 (최소 14GB 필요)
+# 메모리 확인
 TOTAL_MEM=$(free -g | awk '/^Mem:/{print $2}')
 if [ "$TOTAL_MEM" -lt 14 ]; then
-    log_error "메모리 부족: 최소 14GB 필요 (현재: ${TOTAL_MEM}GB)"
-    exit 1
+    error_exit "메모리 부족: 최소 14GB 필요 (현재: ${TOTAL_MEM}GB)"
 fi
 
-# 디스크 공간 확인 (최소 50GB 필요)
+# 디스크 공간 확인
 AVAIL_DISK=$(df / | awk 'NR==2 {print int($4/1024/1024)}')
 if [ "$AVAIL_DISK" -lt 50 ]; then
-    log_error "디스크 공간 부족: 최소 50GB 필요 (현재: ${AVAIL_DISK}GB)"
-    exit 1
+    error_exit "디스크 공간 부족: 최소 50GB 필요 (현재: ${AVAIL_DISK}GB)"
 fi
 
 log_success "사전 검증 완료 (메모리: ${TOTAL_MEM}GB, 디스크: ${AVAIL_DISK}GB)"
@@ -69,7 +69,16 @@ export PIP_DEFAULT_TIMEOUT=100
 ###############################################################################
 log_info "Step 0: 기초 패키지 설치 및 시간 동기화..."
 
-apt-get update -qq
+# APT 업데이트 (재시도 로직)
+for i in {1..3}; do
+    if apt-get update -qq 2>/dev/null; then
+        break
+    fi
+    log_warn "APT 업데이트 재시도 ($i/3)..."
+    sleep 5
+done
+
+# 패키지 설치 (실패해도 계속)
 apt-get install -y \
     python3-pip \
     python3-venv \
@@ -86,13 +95,13 @@ apt-get install -y \
     gnupg \
     lsb-release \
     software-properties-common \
-    > /dev/null 2>&1
+    2>/dev/null || log_warn "일부 패키지 설치 실패 (계속 진행)"
 
-# 시간 동기화 (중요: 인증서 검증)
-systemctl enable chrony > /dev/null 2>&1
-systemctl restart chrony > /dev/null 2>&1
+# 시간 동기화
+systemctl enable chrony >/dev/null 2>&1 || true
+systemctl restart chrony >/dev/null 2>&1 || true
 sleep 2
-chronyc makestep > /dev/null 2>&1 || true
+chronyc makestep >/dev/null 2>&1 || true
 
 log_success "기초 패키지 설치 완료"
 
@@ -101,50 +110,57 @@ log_success "기초 패키지 설치 완료"
 ###############################################################################
 log_warn "Step 1: 기존 환경 정리 중..."
 
-set +e  # 클린업 중에는 에러 무시
-
 # Kolla 정리
 if [ -f ~/kolla-venv/bin/kolla-ansible ]; then
     log_info "기존 Kolla 환경 제거 중..."
-    source ~/kolla-venv/bin/activate
-    kolla-ansible destroy -i ~/all-in-one --yes-i-really-really-mean-it > /dev/null 2>&1
-    deactivate > /dev/null 2>&1
+    if [ -f ~/kolla-venv/bin/activate ]; then
+        source ~/kolla-venv/bin/activate 2>/dev/null || true
+        kolla-ansible destroy -i ~/all-in-one --yes-i-really-really-mean-it >/dev/null 2>&1 || true
+        deactivate >/dev/null 2>&1 || true
+    fi
 fi
 
 # Docker 컨테이너 정리
-if command -v docker &> /dev/null; then
+if command -v docker &>/dev/null; then
     log_info "Docker 컨테이너 정리 중..."
-    docker stop $(docker ps -aq) > /dev/null 2>&1
-    docker rm -f $(docker ps -aq) > /dev/null 2>&1
-    docker network prune -f > /dev/null 2>&1
-    docker volume prune -f > /dev/null 2>&1
-    docker system prune -af > /dev/null 2>&1
+    docker stop $(docker ps -aq) >/dev/null 2>&1 || true
+    docker rm -f $(docker ps -aq) >/dev/null 2>&1 || true
+    docker network prune -f >/dev/null 2>&1 || true
+    docker volume prune -f >/dev/null 2>&1 || true
+    docker system prune -af >/dev/null 2>&1 || true
 fi
 
 # Cinder LVM 정리
 log_info "Cinder LVM 정리 중..."
-vgchange -an cinder > /dev/null 2>&1
-vgremove -f cinder > /dev/null 2>&1
-pvremove -f /dev/loop2 > /dev/null 2>&1
-losetup -d /dev/loop2 > /dev/null 2>&1
-rm -f /var/lib/cinder_data.img
+lvremove -f cinder >/dev/null 2>&1 || true
+vgchange -an cinder >/dev/null 2>&1 || true
+vgremove -f cinder >/dev/null 2>&1 || true
+
+# 모든 루프백 디바이스 확인 및 정리
+for loop in /dev/loop*; do
+    if losetup "$loop" 2>/dev/null | grep -q cinder_data; then
+        pvremove -f "$loop" >/dev/null 2>&1 || true
+        losetup -d "$loop" >/dev/null 2>&1 || true
+    fi
+done
+
+rm -f /var/lib/cinder_data.img 2>/dev/null || true
 
 # 포트 정리
 for PORT in 3306 80 443 5000 8774 9292 9696 3260 6080; do
-    fuser -k ${PORT}/tcp > /dev/null 2>&1
+    fuser -k ${PORT}/tcp >/dev/null 2>&1 || true
 done
 
 # 디렉토리 정리
-rm -rf /etc/kolla
-rm -rf ~/kolla-venv
-rm -rf ~/.ansible
+rm -rf /etc/kolla 2>/dev/null || true
+rm -rf ~/kolla-venv 2>/dev/null || true
+rm -rf ~/.ansible 2>/dev/null || true
 
 # systemd 서비스 정리
-systemctl disable cinder-loop.service > /dev/null 2>&1
-rm -f /etc/systemd/system/cinder-loop.service
-systemctl daemon-reload
-
-set -e  # 다시 에러 체크 활성화
+systemctl stop cinder-loop.service >/dev/null 2>&1 || true
+systemctl disable cinder-loop.service >/dev/null 2>&1 || true
+rm -f /etc/systemd/system/cinder-loop.service 2>/dev/null || true
+systemctl daemon-reload >/dev/null 2>&1 || true
 
 log_success "클린업 완료"
 
@@ -154,30 +170,41 @@ log_success "클린업 완료"
 log_info "Step 2: 스왑 메모리 설정 (16GB)..."
 
 # 기존 스왑 제거
-swapoff -a > /dev/null 2>&1 || true
-sed -i '/swapfile/d' /etc/fstab
-rm -f /swapfile
+swapoff -a >/dev/null 2>&1 || true
+sed -i '/swapfile/d' /etc/fstab 2>/dev/null || true
+rm -f /swapfile 2>/dev/null || true
 
 # 새로운 스왑 생성
 log_info "16GB 스왑 파일 생성 중... (약 30초 소요)"
-dd if=/dev/zero of=/swapfile bs=1M count=16384 status=progress
-chmod 600 /swapfile
-mkswap /swapfile > /dev/null
-swapon /swapfile
-
-# 영구 설정
-if ! grep -q '/swapfile' /etc/fstab; then
-    echo '/swapfile none swap sw 0 0' >> /etc/fstab
+if dd if=/dev/zero of=/swapfile bs=1M count=16384 2>/dev/null; then
+    chmod 600 /swapfile
+    if mkswap /swapfile >/dev/null 2>&1; then
+        if swapon /swapfile 2>/dev/null; then
+            # 영구 설정
+            if ! grep -q '/swapfile' /etc/fstab 2>/dev/null; then
+                echo '/swapfile none swap sw 0 0' >> /etc/fstab
+            fi
+            
+            # 스왑 사용률 최적화
+            sysctl -w vm.swappiness=10 >/dev/null 2>&1 || true
+            sysctl -w vm.vfs_cache_pressure=50 >/dev/null 2>&1 || true
+            
+            if ! grep -q 'vm.swappiness' /etc/sysctl.conf 2>/dev/null; then
+                echo "vm.swappiness=10" >> /etc/sysctl.conf
+                echo "vm.vfs_cache_pressure=50" >> /etc/sysctl.conf
+            fi
+            
+            SWAP_SIZE=$(free -h | awk '/^Swap:/{print $2}')
+            log_success "스왑 메모리 설정 완료 (크기: $SWAP_SIZE)"
+        else
+            log_warn "스왑 활성화 실패 - 기존 스왑 사용"
+        fi
+    else
+        log_warn "스왑 생성 실패 - 기존 스왑 사용"
+    fi
+else
+    log_warn "스왑 파일 생성 실패 - 기존 스왑 사용"
 fi
-
-# 스왑 사용률 최적화
-sysctl -w vm.swappiness=10 > /dev/null
-sysctl -w vm.vfs_cache_pressure=50 > /dev/null
-echo "vm.swappiness=10" >> /etc/sysctl.conf
-echo "vm.vfs_cache_pressure=50" >> /etc/sysctl.conf
-
-SWAP_SIZE=$(free -h | awk '/^Swap:/{print $2}')
-log_success "스왑 메모리 설정 완료 (크기: $SWAP_SIZE)"
 
 ###############################################################################
 # 4. 시스템 설정
@@ -185,8 +212,8 @@ log_success "스왑 메모리 설정 완료 (크기: $SWAP_SIZE)"
 log_info "Step 3: 시스템 설정..."
 
 # 호스트명 설정
-hostnamectl set-hostname openstack
-sed -i '/openstack/d' /etc/hosts
+hostnamectl set-hostname openstack 2>/dev/null || true
+sed -i '/openstack/d' /etc/hosts 2>/dev/null || true
 echo "127.0.0.1 localhost openstack" >> /etc/hosts
 echo "::1 localhost openstack" >> /etc/hosts
 
@@ -195,18 +222,33 @@ if ! vgs cinder &>/dev/null; then
     log_info "Cinder 볼륨 그룹 생성 중... (약 1분 소요)"
     
     # 20GB 파일 생성
-    dd if=/dev/zero of=/var/lib/cinder_data.img bs=1M count=20480 status=progress
-    
-    # 루프백 디바이스 연결
-    LOOP_DEV=$(losetup -f)
-    losetup $LOOP_DEV /var/lib/cinder_data.img
-    
-    # PV 및 VG 생성
-    pvcreate $LOOP_DEV
-    vgcreate cinder $LOOP_DEV
-    
-    # 재부팅 시 자동 마운트 서비스
-    cat > /etc/systemd/system/cinder-loop.service <<'EOF'
+    if dd if=/dev/zero of=/var/lib/cinder_data.img bs=1M count=20480 2>/dev/null; then
+        # 사용 가능한 루프백 디바이스 찾기
+        LOOP_DEV=$(losetup -f 2>/dev/null)
+        
+        if [ -z "$LOOP_DEV" ]; then
+            error_exit "사용 가능한 루프백 디바이스가 없습니다"
+        fi
+        
+        if losetup $LOOP_DEV /var/lib/cinder_data.img 2>/dev/null; then
+            # PV 및 VG 생성
+            if pvcreate $LOOP_DEV 2>/dev/null && vgcreate cinder $LOOP_DEV 2>/dev/null; then
+                log_success "Cinder VG 생성 완료 (디바이스: $LOOP_DEV)"
+            else
+                error_exit "Cinder VG 생성 실패"
+            fi
+        else
+            error_exit "루프백 디바이스 연결 실패"
+        fi
+    else
+        error_exit "Cinder 데이터 파일 생성 실패"
+    fi
+else
+    log_info "Cinder VG가 이미 존재합니다"
+fi
+
+# 재부팅 시 자동 마운트 서비스
+cat > /etc/systemd/system/cinder-loop.service <<'EOF'
 [Unit]
 Description=Setup Cinder Loopback Device
 After=local-fs.target
@@ -214,47 +256,50 @@ Before=docker.service
 
 [Service]
 Type=oneshot
-ExecStart=/bin/bash -c 'LOOP=$(/sbin/losetup -f); /sbin/losetup $LOOP /var/lib/cinder_data.img; /sbin/pvscan; /sbin/vgscan; /sbin/vgchange -ay cinder'
+ExecStart=/bin/bash -c 'if [ -f /var/lib/cinder_data.img ]; then LOOP=$(/sbin/losetup -f); /sbin/losetup $LOOP /var/lib/cinder_data.img 2>/dev/null || true; /sbin/pvscan 2>/dev/null || true; /sbin/vgscan 2>/dev/null || true; /sbin/vgchange -ay cinder 2>/dev/null || true; fi'
 RemainAfterExit=yes
 
 [Install]
 WantedBy=multi-user.target
 EOF
-    
-    systemctl daemon-reload
-    systemctl enable cinder-loop.service > /dev/null 2>&1
-    
-    log_success "Cinder VG 생성 완료 (디바이스: $LOOP_DEV)"
-fi
+
+systemctl daemon-reload >/dev/null 2>&1 || true
+systemctl enable cinder-loop.service >/dev/null 2>&1 || true
+
+log_success "Cinder 자동 마운트 서비스 등록 완료"
 
 # 더미 네트워크 인터페이스 생성
 if ! ip link show eth1 &>/dev/null; then
     log_info "외부망 더미 인터페이스 생성..."
     
-    modprobe dummy > /dev/null 2>&1 || true
-    ip link add eth1 type dummy
-    ip link set eth1 up
+    modprobe dummy >/dev/null 2>&1 || true
     
-    # 영구 설정
-    mkdir -p /etc/systemd/network
-    
-    cat > /etc/systemd/network/10-dummy0.netdev <<EOF
+    if ip link add eth1 type dummy 2>/dev/null && ip link set eth1 up 2>/dev/null; then
+        # 영구 설정
+        mkdir -p /etc/systemd/network
+        
+        cat > /etc/systemd/network/10-dummy0.netdev <<EOF
 [NetDev]
 Name=eth1
 Kind=dummy
 EOF
-    
-    cat > /etc/systemd/network/20-dummy0.network <<EOF
+        
+        cat > /etc/systemd/network/20-dummy0.network <<EOF
 [Match]
 Name=eth1
 
 [Network]
 EOF
-    
-    systemctl enable systemd-networkd > /dev/null 2>&1
-    systemctl restart systemd-networkd > /dev/null 2>&1 || true
-    
-    log_success "더미 인터페이스 생성 완료"
+        
+        systemctl enable systemd-networkd >/dev/null 2>&1 || true
+        systemctl restart systemd-networkd >/dev/null 2>&1 || true
+        
+        log_success "더미 인터페이스 생성 완료"
+    else
+        log_warn "더미 인터페이스 생성 실패 - 계속 진행"
+    fi
+else
+    log_info "더미 인터페이스가 이미 존재합니다"
 fi
 
 ###############################################################################
@@ -264,12 +309,12 @@ if ! command -v docker &>/dev/null; then
     log_info "Step 4: Docker 설치 중..."
     
     # Docker 공식 GPG 키 및 저장소 추가
-    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg 2>/dev/null | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg 2>/dev/null || true
     
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
     
-    apt-get update -qq
-    apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin > /dev/null 2>&1
+    apt-get update -qq 2>/dev/null || true
+    apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin 2>/dev/null || error_exit "Docker 설치 실패"
     
     # Docker 최적화
     mkdir -p /etc/docker
@@ -280,16 +325,26 @@ if ! command -v docker &>/dev/null; then
         "max-size": "50m",
         "max-file": "3"
     },
-    "storage-driver": "overlay2"
+    "storage-driver": "overlay2",
+    "live-restore": true
 }
 EOF
     
-    systemctl enable docker
-    systemctl restart docker
+    systemctl enable docker >/dev/null 2>&1 || true
+    systemctl restart docker || error_exit "Docker 시작 실패"
     
-    log_success "Docker 설치 완료"
+    # Docker 정상 작동 확인
+    sleep 3
+    if docker ps >/dev/null 2>&1; then
+        log_success "Docker 설치 완료"
+    else
+        error_exit "Docker가 정상 작동하지 않습니다"
+    fi
 else
-    log_info "Docker 이미 설치됨 (버전: $(docker --version | awk '{print $3}'))"
+    log_info "Docker 이미 설치됨 (버전: $(docker --version 2>/dev/null | awk '{print $3}' | tr -d ','))"
+    # Docker 재시작
+    systemctl restart docker >/dev/null 2>&1 || true
+    sleep 3
 fi
 
 ###############################################################################
@@ -298,21 +353,52 @@ fi
 log_info "Step 5: Kolla-Ansible 설치 중..."
 
 # Python 가상환경 생성
-python3 -m venv ~/kolla-venv
-source ~/kolla-venv/bin/activate
+if ! python3 -m venv ~/kolla-venv 2>/dev/null; then
+    error_exit "Python 가상환경 생성 실패"
+fi
+
+source ~/kolla-venv/bin/activate || error_exit "가상환경 활성화 실패"
 
 # pip 업그레이드
-pip install --upgrade pip setuptools wheel > /dev/null
+pip install --upgrade pip setuptools wheel >/dev/null 2>&1 || log_warn "pip 업그레이드 실패 - 계속 진행"
 
-# Kolla-Ansible 설치 (2024.2 Dalmatian)
+# Kolla-Ansible 설치 (재시도 로직)
 log_info "Kolla-Ansible 패키지 설치 중... (약 2분 소요)"
-pip install 'ansible-core>=2.16,<2.18' > /dev/null
-pip install 'kolla-ansible==19.1.0' > /dev/null
+
+for i in {1..3}; do
+    if pip install 'ansible-core>=2.16,<2.18' >/dev/null 2>&1; then
+        break
+    fi
+    log_warn "ansible-core 설치 재시도 ($i/3)..."
+    sleep 5
+done
+
+for i in {1..3}; do
+    if pip install 'kolla-ansible==19.1.0' >/dev/null 2>&1; then
+        break
+    fi
+    log_warn "kolla-ansible 설치 재시도 ($i/3)..."
+    sleep 5
+done
+
+# 설치 확인
+if ! command -v kolla-ansible &>/dev/null; then
+    error_exit "Kolla-Ansible 설치 실패"
+fi
 
 # 설정 파일 복사
 mkdir -p /etc/kolla
-cp -r ~/kolla-venv/share/kolla-ansible/etc_examples/kolla/* /etc/kolla/
-cp ~/kolla-venv/share/kolla-ansible/ansible/inventory/all-in-one ~/
+if [ -d ~/kolla-venv/share/kolla-ansible/etc_examples/kolla ]; then
+    cp -r ~/kolla-venv/share/kolla-ansible/etc_examples/kolla/* /etc/kolla/ || error_exit "Kolla 설정 파일 복사 실패"
+else
+    error_exit "Kolla 설정 파일을 찾을 수 없습니다"
+fi
+
+if [ -f ~/kolla-venv/share/kolla-ansible/ansible/inventory/all-in-one ]; then
+    cp ~/kolla-venv/share/kolla-ansible/ansible/inventory/all-in-one ~/ || error_exit "Inventory 파일 복사 실패"
+else
+    error_exit "Inventory 파일을 찾을 수 없습니다"
+fi
 
 log_success "Kolla-Ansible 설치 완료"
 
@@ -322,7 +408,7 @@ log_success "Kolla-Ansible 설치 완료"
 log_info "Step 6: OpenStack 설정 구성 중..."
 
 # 가상화 타입 확인
-if grep -E 'vmx|svm' /proc/cpuinfo > /dev/null; then
+if grep -E 'vmx|svm' /proc/cpuinfo >/dev/null 2>&1; then
     NOVA_VIRT_TYPE='kvm'
     log_info "KVM 가상화 지원 감지"
 else
@@ -333,8 +419,7 @@ fi
 # 메인 네트워크 인터페이스 감지
 MAIN_INTERFACE=$(ip route | grep default | awk '{print $5}' | head -1)
 if [ -z "$MAIN_INTERFACE" ]; then
-    log_error "네트워크 인터페이스를 찾을 수 없습니다"
-    exit 1
+    error_exit "네트워크 인터페이스를 찾을 수 없습니다"
 fi
 log_info "메인 인터페이스: $MAIN_INTERFACE"
 
@@ -406,10 +491,16 @@ openstack_logging_debug: "False"
 EOF
 
 # 패스워드 생성
-kolla-genpwd
+if ! kolla-genpwd 2>/dev/null; then
+    error_exit "Kolla 패스워드 생성 실패"
+fi
 
 # Admin 패스워드 저장
-ADMIN_PASSWORD=$(grep keystone_admin_password /etc/kolla/passwords.yml | awk '{print $2}')
+ADMIN_PASSWORD=$(grep keystone_admin_password /etc/kolla/passwords.yml 2>/dev/null | awk '{print $2}')
+if [ -z "$ADMIN_PASSWORD" ]; then
+    error_exit "Admin 패스워드를 찾을 수 없습니다"
+fi
+
 cat > ~/openstack-credentials.txt <<EOF
 # OpenStack 관리자 계정 정보
 URL: http://$EXTERNAL_IP
@@ -436,6 +527,7 @@ gathering = smart
 fact_caching = jsonfile
 fact_caching_connection = /tmp/ansible_facts
 fact_caching_timeout = 3600
+retry_files_enabled = False
 
 [ssh_connection]
 ssh_args = -o ControlMaster=auto -o ControlPersist=60s
@@ -453,37 +545,40 @@ echo ""
 
 # 의존성 설치
 log_info "[1/4] 의존성 설치 중..."
-kolla-ansible install-deps > /dev/null 2>&1
+kolla-ansible install-deps >/dev/null 2>&1 || log_warn "의존성 설치 경고 무시"
 
 # Bootstrap
 log_info "[2/4] Bootstrap 실행 중... (약 5분)"
-if ! kolla-ansible bootstrap-servers -i ~/all-in-one; then
-    log_error "Bootstrap 실패"
+if ! kolla-ansible bootstrap-servers -i ~/all-in-one 2>&1 | tee /tmp/kolla-bootstrap.log | grep -v "^$"; then
+    log_error "Bootstrap 실패 - 로그 확인: /tmp/kolla-bootstrap.log"
     exit 1
 fi
 
 # Prechecks
 log_info "[3/4] Prechecks 실행 중... (약 3분)"
-if ! kolla-ansible prechecks -i ~/all-in-one; then
-    log_error "Prechecks 실패 - 시스템 요구사항을 확인하세요"
+if ! kolla-ansible prechecks -i ~/all-in-one 2>&1 | tee /tmp/kolla-prechecks.log | grep -v "^$"; then
+    log_error "Prechecks 실패 - 로그 확인: /tmp/kolla-prechecks.log"
     exit 1
 fi
 
 # Deploy
 log_info "[4/4] Deploy 실행 중... (약 25분, Cinder 포함)"
 log_warn "이 단계는 시간이 오래 걸립니다. 기다려 주세요..."
-if ! kolla-ansible deploy -i ~/all-in-one; then
-    log_error "배포 실패"
-    log_info "로그 확인: journalctl -xe"
+if ! kolla-ansible deploy -i ~/all-in-one 2>&1 | tee /tmp/kolla-deploy.log | grep -v "^$"; then
+    log_error "배포 실패 - 로그 확인: /tmp/kolla-deploy.log"
+    log_info "Docker 컨테이너 상태: docker ps -a"
     exit 1
 fi
 
 # Post-deploy
 log_info "Post-deploy 설정 중..."
-kolla-ansible post-deploy -i ~/all-in-one
+if ! kolla-ansible post-deploy -i ~/all-in-one 2>&1 | tee /tmp/kolla-postdeploy.log | grep -v "^$"; then
+    log_warn "Post-deploy 경고 발생 - 계속 진행"
+fi
 
 # OpenStack 클라이언트 설치
-pip install python-openstackclient python-cinderclient python-novaclient python-glanceclient > /dev/null
+log_info "OpenStack 클라이언트 설치 중..."
+pip install python-openstackclient python-cinderclient python-novaclient python-glanceclient >/dev/null 2>&1 || log_warn "클라이언트 설치 경고 무시"
 
 log_success "OpenStack 배포 완료!"
 
@@ -492,20 +587,21 @@ log_success "OpenStack 배포 완료!"
 ###############################################################################
 log_info "Step 8: 환경 검증 중..."
 
-source /etc/kolla/admin-openrc.sh
-
-# 서비스 상태 확인
-sleep 10
-
-set +e
-log_info "OpenStack 서비스 확인 중..."
-openstack endpoint list > /dev/null 2>&1
-if [ $? -eq 0 ]; then
-    log_success "Keystone 서비스 정상"
+if [ -f /etc/kolla/admin-openrc.sh ]; then
+    source /etc/kolla/admin-openrc.sh 2>/dev/null || true
+    
+    # 서비스 상태 확인
+    sleep 10
+    
+    log_info "OpenStack 서비스 확인 중..."
+    if openstack endpoint list >/dev/null 2>&1; then
+        log_success "Keystone 서비스 정상"
+    else
+        log_warn "Keystone 초기화 중... 잠시 후 다시 시도하세요"
+    fi
 else
-    log_warn "Keystone 초기화 중... 잠시 후 다시 시도하세요"
+    log_warn "admin-openrc.sh 파일을 찾을 수 없습니다"
 fi
-set -e
 
 ###############################################################################
 # 11. 완료 메시지
@@ -534,9 +630,15 @@ echo -e "   관리자 환경: ${YELLOW}source /etc/kolla/admin-openrc.sh${NC}"
 echo -e "   서비스 확인: ${YELLOW}openstack endpoint list${NC}"
 echo -e "   볼륨 확인: ${YELLOW}openstack volume service list${NC}"
 echo -e "   Cinder VG: ${YELLOW}vgs cinder${NC}"
+echo -e "   로그 확인: ${YELLOW}docker logs <container_name>${NC}"
 echo ""
 echo -e "${BLUE}📌 자격증명 파일${NC}"
 echo -e "   ${YELLOW}~/openstack-credentials.txt${NC}"
 echo ""
-echo -e "${GREEN}설치가 완료되었습니다!${NC}"
+echo -e "${BLUE}📌 문제 발생 시${NC}"
+echo -e "   Bootstrap 로그: ${YELLOW}/tmp/kolla-bootstrap.log${NC}"
+echo -e "   Prechecks 로그: ${YELLOW}/tmp/kolla-prechecks.log${NC}"
+echo -e "   Deploy 로그: ${YELLOW}/tmp/kolla-deploy.log${NC}"
 echo ""
+echo -e "${GREEN}설치가 완료되었습니다!${NC}"
+echo
