@@ -128,10 +128,11 @@ enable_neutron: "yes"
 enable_horizon: "yes"
 enable_placement: "yes"
 
-# Nova 설정 (자동 감지 권장)
-# NHN Cloud는 중첩 가상화 지원하므로 KVM 사용 가능
-# 주석 처리하면 자동으로 kvm/qemu 선택
-# nova_compute_virt_type: "qemu"
+# Nova 가상화 타입 설정
+# Step 1에서 egrep -c '(vmx|svm)' /proc/cpuinfo 결과에 따라 설정:
+# - 1 이상 출력: KVM 지원 → 주석 유지 (자동 감지로 KVM 사용)
+# - 0 출력: KVM 미지원 → 아래 주석 해제하여 QEMU 사용
+# nova_compute_virt_type: "qemu"  # KVM 미지원 시에만 주석 해제!
 
 # Neutron 설정
 neutron_plugin_agent: "openvswitch"
