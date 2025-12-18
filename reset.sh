@@ -48,8 +48,8 @@ if command -v docker &>/dev/null; then
     # 네트워크 정리
     docker network prune -f 2>/dev/null || true
     
-    # 볼륨 정리 
-    docker volume prune -f 2>/dev/null || true
+    # 볼륨 정리 (모든 볼륨 강제 삭제)
+    docker volume rm $(docker volume ls -q) 2>/dev/null || true
     
     # 이미지 정리 (모든 이미지 삭제)
     docker rmi -f $(docker images -aq) 2>/dev/null || true
@@ -150,6 +150,7 @@ rm -f ~/openstack-credentials.txt 2>/dev/null || true
 
 # Kolla 로그 파일
 rm -f /tmp/kolla-*.log 2>/dev/null || true
+rm -f /tmp/ansible-*.log 2>/dev/null || true
 
 # OpenStack 클라이언트 설정
 rm -f ~/admin-openrc.sh 2>/dev/null || true
