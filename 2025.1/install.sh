@@ -3,14 +3,12 @@
 # ==========================================================
 # NHN Cloud OpenStack 2025.1 (Epoxy) Installer
 # ==========================================================
-# 특징: 최신 Ansible Core(앤서블 코어) 사용 + Docker SDK 의존성 해결
-# OS: Ubuntu 24.04 LTS
-# 대상: 단일 인스턴스 호스트 (All-in-One)용
+# 특징: Docker SDK(Software Development Kit) 해결 + Galaxy 무제한 재시도
+# OS: Ubuntu 24.04 LTS (All-in-One, 올인원)
 # ==========================================================
 
 set -e
 
-# 색상 정의
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 RED='\033[0;31m'
@@ -21,110 +19,84 @@ success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 error() { echo -e "${RED}[ERROR]${NC} $1"; }
 exit_error() { error "$1"; exit 1; }
 
-# 1. Root(루트) 권한 체크
 if [ "$EUID" -ne 0 ]; then
     exit_error "root 권한으로 실행해주세요. (sudo -i)"
 fi
 
-# 2. IP(Internet Protocol) 입력 확인
 if [ -z "$1" ] || [ -z "$2" ]; then
-    echo "========================================================"
-    error "IP 주소가 입력되지 않았습니다."
-    echo "사용법: $0 <사설_IP> <플로팅_IP>"
-    echo "예시  : $0 192.168.0.102 133.186.132.232"
-    echo "========================================================"
+    error "사용법: $0 <사설_IP> <플로팅_IP>"
     exit 1
 fi
 
+# IP (Internet Protocol, 인터넷 프로토콜) 설정
 MY_PRIVATE_IP="$1"
 MY_FLOATING_IP="$2"
 
 log "Target Version: OpenStack 2025.1 (Epoxy)"
 log "Private IP    : ${MY_PRIVATE_IP}"
-sleep 1
 
-# ==========================================================
-# [Step 0] 기존 환경 완전 삭제 (Clean Install)
-# ==========================================================
+# [Step 0] 기존 환경 정리
 log "기존 환경 정리 시작..."
-
 if command -v docker &>/dev/null; then
     docker stop $(docker ps -aq) >/dev/null 2>&1 || true
     docker rm -f $(docker ps -aq) >/dev/null 2>&1 || true
     docker volume rm $(docker volume ls -q) >/dev/null 2>&1 || true
-    docker network prune -f >/dev/null 2>&1 || true
 fi
-
-rm -rf /etc/kolla/*
-rm -rf /var/lib/kolla
-rm -rf ~/kolla-venv
-rm -rf /root/.ansible
+rm -rf /etc/kolla/* /var/lib/kolla ~/kolla-venv /root/.ansible
 mkdir -p /etc/kolla
 
-# ==========================================================
-# [Step 1] 필수 시스템 설정
-# ==========================================================
-log "호스트네임 및 SSH 설정 중..."
-
+# [Step 1] 시스템 기본 설정
 hostnamectl set-hostname openstack
 sed -i '/openstack/d' /etc/hosts
 echo "${MY_PRIVATE_IP} openstack" >> /etc/hosts
 
-# SSH 키 설정
-if [ ! -f ~/.ssh/id_rsa ]; then
-    ssh-keygen -t rsa -N "" -f ~/.ssh/id_rsa
-fi
+# SSH (Secure Shell, 보안 셸) 키 설정
+if [ ! -f ~/.ssh/id_rsa ]; then ssh-keygen -t rsa -N "" -f ~/.ssh/id_rsa; fi
 cat ~/.ssh/id_rsa.pub >> ~/.ssh/authorized_keys
 chmod 600 ~/.ssh/authorized_keys
 echo "StrictHostKeyChecking no" > ~/.ssh/config
 
-# 스왑 메모리 설정 (16GB)
+# 스왑(Swap) 메모리 설정
 if [ ! -f /swapfile ]; then
-    fallocate -l 16G /swapfile
-    chmod 600 /swapfile
-    mkswap /swapfile
-    swapon /swapfile
+    fallocate -l 16G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
     echo '/swapfile none swap sw 0 0' >> /etc/fstab
 fi
 
-# ==========================================================
-# [Step 2] 패키지 및 Kolla-Ansible 설치 (에러 수정됨)
-# ==========================================================
-log "시스템 패키지 및 Python 가상환경 구성..."
-apt update -qq
-apt install -y python3-dev python3-pip python3-venv git curl libffi-dev gcc libssl-dev lsof
-
+# [Step 2] 패키지 및 Python 가상 환경(VENV, Virtual Environment) 설치
+log "시스템 패키지 및 가상 환경 구성..."
+apt update -qq && apt install -y python3-dev python3-pip python3-venv git curl libffi-dev gcc libssl-dev lsof
 python3 -m venv ~/kolla-venv
 source ~/kolla-venv/bin/activate
 pip install -U pip wheel
 
-log "Kolla-Ansible 및 Docker SDK 설치 중..."
-# [수정 사항] Docker SDK를 명시적으로 설치하여 Precheck 에러를 방지합니다.
-pip install 'ansible-core>=2.16'
-pip install docker
+# Docker SDK (Software Development Kit, 소프트웨어 개발 키트) 명시적 설치
+pip install 'ansible-core>=2.16' docker
 pip install git+https://opendev.org/openstack/kolla-ansible@stable/2025.1
 
-# 설정 파일 복사
 cp -r ~/kolla-venv/share/kolla-ansible/etc_examples/kolla/* /etc/kolla/
 cp ~/kolla-venv/share/kolla-ansible/ansible/inventory/all-in-one .
 
 # ==========================================================
-# [Step 3] 의존성 설치
+# [Step 3] 의존성 설치 (성공할 때까지 무한 재시도)
 # ==========================================================
-log "Ansible Galaxy(앤서블 갤럭시) 의존성 설치..."
-kolla-ansible install-deps
-success "의존성 설치 완료"
+log "Ansible Galaxy(앤서블 갤럭시) 의존성 설치 시작 (무제한 시도)..."
+RETRY_COUNT=0
 
-# ==========================================================
-# [Step 4] globals.yml 설정
-# ==========================================================
-log "오픈스택 환경 설정(globals.yml) 생성..."
+while true; do
+    RETRY_COUNT=$((RETRY_COUNT + 1))
+    # 앤서블 갤럭시에서 컬렉션을 설치합니다.
+    if kolla-ansible install-deps; then
+        success "의존성 설치 완료! (총 $RETRY_COUNT 번째 시도에서 성공)"
+        break
+    else
+        error "의존성 설치 실패 (시도 횟수: $RETRY_COUNT). 2초 후 다시 시도합니다..."
+        sleep 2
+    fi
+done
+
+# [Step 4] globals.yml (Global Configuration, 글로벌 설정 파일) 생성
 MAIN_INTERFACE=$(ip -4 addr show | grep "$MY_PRIVATE_IP" | awk '{print $NF}' | head -1)
-
-if ! ip link show eth1 >/dev/null 2>&1; then
-    ip link add eth1 type dummy
-    ip link set eth1 up
-fi
+if ! ip link show eth1 >/dev/null 2>&1; then ip link add eth1 type dummy; ip link set eth1 up; fi
 
 cat > /etc/kolla/globals.yml <<EOF
 ---
@@ -145,39 +117,30 @@ enable_grafana: "no"
 enable_fluentd: "no"
 nova_compute_virt_type: "qemu"
 EOF
-
 kolla-genpwd
 
-# ==========================================================
-# [Step 5] Cinder(신더) LVM 볼륨 구성
-# ==========================================================
-log "Cinder 볼륨 준비 중..."
+# [Step 5] Cinder (Block Storage Service, 블록 스토리지 서비스) 볼륨 구성
 if ! vgs cinder >/dev/null 2>&1; then
     dd if=/dev/zero of=/var/lib/cinder.img bs=1M count=20000 status=none
     LOOP_DEV=$(losetup -f --show /var/lib/cinder.img)
-    pvcreate $LOOP_DEV
-    vgcreate cinder $LOOP_DEV
+    pvcreate $LOOP_DEV && vgcreate cinder $LOOP_DEV
 fi
 
-# ==========================================================
-# [Step 6] 배포 실행
-# ==========================================================
-log ">>> 배포 시작: 1. Bootstrap Servers"
+# [Step 6] 배포(Deploy) 실행
+log "Bootstrap Servers (부트스트랩 서버) 진행..."
 kolla-ansible bootstrap-servers -i all-in-one
 
-log ">>> 배포 시작: 2. Prechecks"
+log "Prechecks (사전 점검) 진행..."
 kolla-ansible prechecks -i all-in-one
 
-log ">>> 배포 시작: 3. Deploy"
+log "Deploy (배포) 진행..."
 kolla-ansible deploy -i all-in-one
 
-log ">>> 배포 시작: 4. Post-deploy"
+log "Post-deploy (배포 후 설정) 진행..."
 kolla-ansible post-deploy -i all-in-one
-
-# 클라이언트 설치
 pip install python-openstackclient
 
-# 완료 정보 출력
+# 결과 출력
 PASS=$(grep keystone_admin_password /etc/kolla/passwords.yml | awk '{print $2}')
 success "========================================================"
 success " 설치 완료! (OpenStack 2025.1 Epoxy)"
