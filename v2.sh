@@ -308,6 +308,17 @@ rabbitmq_vm_memory_high_watermark: "0.4"
 nova_max_concurrent_builds: "2"
 mariadb_wsrep_slave_threads: "2"
 
+# 타임아웃 설정 (MariaDB VIP 연결 문제 해결)
+ansible_ssh_timeout: 180
+docker_client_timeout: 900
+haproxy_client_timeout: "10m"
+haproxy_server_timeout: "10m"
+nova_rpc_response_timeout: 300
+
+# MariaDB 추가 설정 (VIP 연결 문제 해결)
+mariadb_interface: "$MAIN_INTERFACE"
+mariadb_backups_cleanup: "2"
+
 # 모니터링 비활성화
 enable_ceilometer: "no"
 enable_gnocchi: "no"
@@ -315,6 +326,8 @@ enable_grafana: "no"
 enable_prometheus: "no"
 enable_prometheus_openstack_exporter: "no"
 enable_alertmanager: "no"
+enable_cloudkitty: "no"
+enable_heat: "no"
 
 openstack_logging_debug: "False"
 EOF
@@ -356,34 +369,174 @@ export ANSIBLE_CONFIG=~/ansible.cfg
 ###############################################################################
 log_info "Step 7: OpenStack 배포 시작 (약 30~40분)..."
 
-# Ansible Galaxy 컬렉션 설치 (오류 방지)
+# Ansible Galaxy 컬렉션 설치 (모든 필수 컬렉션 명시적 설치)
 log_info "Ansible Galaxy 컬렉션 설치..."
+
+# Kolla-Ansible requirements.yml 먼저 설치
 if [ -f ~/kolla-venv/share/kolla-ansible/requirements.yml ]; then
-    ansible-galaxy collection install -r ~/kolla-venv/share/kolla-ansible/requirements.yml --force
+    ansible-galaxy collection install -r ~/kolla-venv/share/kolla-ansible/requirements.yml --force || true
 fi
-# 필수 컬렉션 추가
-ansible-galaxy collection install ansible.posix ansible.netcommon ansible.utils community.docker --force
+
+# 모든 필수 컬렉션 명시적 설치 (누락 방지)
+log_info "필수 Ansible 컬렉션 설치 중..."
+COLLECTIONS=(
+    # Ansible 공식 컬렉션
+    "ansible.posix"           # mount, sysctl, synchronize, authorized_key 등
+    "ansible.utils"           # ipaddr 필터, validate 등
+    "ansible.netcommon"       # 네트워크 공통 모듈
+    
+    # Community 컬렉션
+    "community.general"       # ufw, modprobe, timezone, pip 등 필수!
+    "community.docker"        # docker_container, docker_image 등
+    "community.crypto"        # openssl 인증서 관련
+    "community.mysql"         # MariaDB/MySQL 관련
+    "community.rabbitmq"      # RabbitMQ 관련
+    
+    # OpenStack Kolla 컬렉션
+    "openstack.kolla"         # Kolla 전용 모듈
+)
+
+for collection in "${COLLECTIONS[@]}"; do
+    log_info "  Installing $collection..."
+    MAX_RETRIES=10
+    RETRY_COUNT=0
+    while true; do
+        if ansible-galaxy collection install "$collection" --force --pre 2>/dev/null; then
+            log_success "  $collection 설치 완료"
+            break
+        else
+            RETRY_COUNT=$((RETRY_COUNT + 1))
+            if [ $RETRY_COUNT -ge $MAX_RETRIES ]; then
+                log_error "  $collection 설치 실패 (${MAX_RETRIES}회 시도) - 스크립트 종료"
+                exit 1
+            fi
+            log_warn "  $collection 설치 실패 - 재시도 중... (${RETRY_COUNT}/${MAX_RETRIES})"
+            sleep 5
+        fi
+    done
+done
+
+log_success "Ansible 컬렉션 설치 완료"
+
+###############################################################################
+# 디버깅 함수 정의
+###############################################################################
+debug_docker_status() {
+    log_info "=== Docker 컨테이너 상태 ==="
+    docker ps -a --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | head -20
+    echo ""
+}
+
+debug_mariadb_status() {
+    log_info "=== MariaDB 디버깅 ==="
+    
+    # MariaDB 컨테이너 확인
+    if docker ps | grep -q mariadb; then
+        log_success "MariaDB 컨테이너 실행 중"
+        
+        # MariaDB 로그 확인
+        log_info "MariaDB 최근 로그:"
+        docker logs mariadb --tail 20 2>&1 | tail -10
+        echo ""
+        
+        # MariaDB 포트 확인
+        log_info "MariaDB 포트 바인딩:"
+        docker port mariadb 2>/dev/null || echo "포트 정보 없음"
+        echo ""
+        
+        # MariaDB 내부 연결 테스트
+        log_info "MariaDB 내부 연결 테스트:"
+        docker exec mariadb mysql -h 127.0.0.1 -P 3306 -u root -e "SELECT 1;" 2>&1 || log_warn "내부 연결 실패"
+        echo ""
+        
+        # MariaDB 소켓 확인
+        log_info "MariaDB 리스닝 상태:"
+        docker exec mariadb ss -tlnp 2>/dev/null | grep 3306 || echo "3306 포트 리스닝 안됨"
+        echo ""
+    else
+        log_warn "MariaDB 컨테이너가 실행되고 있지 않음"
+    fi
+}
+
+debug_network_status() {
+    log_info "=== 네트워크 상태 ==="
+    
+    # 호스트 127.0.0.1:3306 확인
+    log_info "호스트 127.0.0.1:3306 확인:"
+    ss -tlnp | grep 3306 || echo "3306 리스닝 없음"
+    echo ""
+    
+    # Docker 네트워크 확인
+    log_info "Docker 네트워크:"
+    docker network ls
+    echo ""
+    
+    # kolla 네트워크 상세
+    log_info "Kolla 네트워크 상세:"
+    docker network inspect kolla_net 2>/dev/null | grep -A5 "IPAM" || echo "kolla_net 없음"
+    echo ""
+}
+
+debug_all() {
+    echo ""
+    echo "============================================================"
+    log_warn "디버깅 정보 수집 중..."
+    echo "============================================================"
+    debug_docker_status
+    debug_mariadb_status
+    debug_network_status
+    echo "============================================================"
+    echo ""
+}
 
 # Bootstrap
 log_info "Bootstrap 실행..."
-if ! kolla-ansible bootstrap-servers -i ~/all-in-one; then
-    log_error "Bootstrap 실패 - 로그 확인"
+if ! kolla-ansible bootstrap-servers -i ~/all-in-one -vvv 2>&1 | tee /tmp/kolla-bootstrap.log; then
+    log_error "Bootstrap 실패"
+    debug_all
+    log_error "로그 파일: /tmp/kolla-bootstrap.log"
     exit 1
 fi
+log_success "Bootstrap 완료"
 
 # Prechecks
 log_info "Prechecks 실행..."
-if ! kolla-ansible prechecks -i ~/all-in-one; then
-    log_error "Prechecks 실패 - 로그 확인"
+if ! kolla-ansible prechecks -i ~/all-in-one -vv 2>&1 | tee /tmp/kolla-prechecks.log; then
+    log_error "Prechecks 실패"
+    debug_all
+    log_error "로그 파일: /tmp/kolla-prechecks.log"
     exit 1
 fi
+log_success "Prechecks 완료"
 
 # Deploy
 log_info "Deploy 실행... (오래 걸림)"
-if ! kolla-ansible deploy -i ~/all-in-one; then
-    log_warn "Deploy 실패 - 재시도 등 확인 필요"
+log_info "상세 로그: /tmp/kolla-deploy.log"
+if ! kolla-ansible deploy -i ~/all-in-one -vv 2>&1 | tee /tmp/kolla-deploy.log; then
+    log_error "Deploy 실패"
+    echo ""
+    debug_all
+    
+    # 추가 MariaDB 디버깅
+    log_info "=== MariaDB 상세 진단 ==="
+    log_info "MariaDB 전체 로그:"
+    docker logs mariadb 2>&1 | tail -50
+    echo ""
+    
+    log_info "MariaDB 설정 확인:"
+    docker exec mariadb cat /etc/mysql/mariadb.cnf 2>/dev/null | head -30 || echo "설정 파일 접근 불가"
+    echo ""
+    
+    log_info "MariaDB 프로세스 확인:"
+    docker exec mariadb ps aux 2>/dev/null || echo "프로세스 확인 불가"
+    echo ""
+    
+    log_error "로그 파일: /tmp/kolla-deploy.log"
+    log_info "MariaDB 로그 확인: docker logs mariadb"
+    log_info "전체 로그 확인: tail -100 /tmp/kolla-deploy.log"
     exit 1
 fi
+log_success "Deploy 완료"
 
 # Post-deploy
 log_info "Post-deploy 실행..."

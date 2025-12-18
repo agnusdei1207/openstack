@@ -54,8 +54,8 @@ fi
 
 # 메모리 확인
 TOTAL_MEM=$(free -g | awk '/^Mem:/{print $2}')
-if [ "$TOTAL_MEM" -lt 14 ]; then
-    error_exit "메모리 부족: 최소 14GB 필요 (현재: ${TOTAL_MEM}GB)"
+if [ "$TOTAL_MEM" -lt 7 ]; then
+    error_exit "메모리 부족: 최소 7GB 필요 (현재: ${TOTAL_MEM}GB)"
 fi
 
 # 디스크 공간 확인
