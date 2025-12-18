@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# v2 start
+# v3 start
 
 # 색상 정의
 GREEN='\033[0;32m'
@@ -94,8 +94,9 @@ fi
 if command -v docker &>/dev/null; then
     docker stop $(docker ps -aq) >/dev/null 2>&1 || true
     docker rm -f $(docker ps -aq) >/dev/null 2>&1 || true
+    # ProxySQL 인증 오류 방지를 위해 모든 볼륨 제거
+    docker volume rm $(docker volume ls -q) >/dev/null 2>&1 || true
     docker network prune -f >/dev/null 2>&1 || true
-    docker volume prune -f >/dev/null 2>&1 || true
 fi
 
 # Cinder LVM 정리
@@ -285,6 +286,7 @@ log_success "Ansible Galaxy 의존성 설치 완료"
 log_info "Step 8: OpenStack 설정 구성..."
 
 MAIN_INTERFACE=$(ip route | grep default | awk '{print $5}' | head -1)
+HOST_INTERNAL_IP=$(ip -4 addr show "$MAIN_INTERFACE" | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1)
 
 cat > /etc/kolla/globals.yml <<EOF
 ---
@@ -295,14 +297,14 @@ openstack_release: "2024.2"
 # 네트워크
 network_interface: "$MAIN_INTERFACE"
 neutron_external_interface: "eth1"
-kolla_internal_vip_address: "127.0.0.1"
+kolla_internal_vip_address: "$HOST_INTERNAL_IP"
 kolla_external_vip_address: "$EXTERNAL_IP"
 
 # DNS 설정
 neutron_dns_nameservers: ["8.8.8.8", "8.8.4.4"]
 
 # 서비스
-enable_haproxy: "no"
+enable_haproxy: "yes"
 enable_keystone: "yes"
 enable_glance: "yes"
 enable_nova: "yes"
@@ -531,4 +533,4 @@ echo "전체 컨테이너 확인: docker ps"
 echo "OpenStack 환경 로드: source /etc/kolla/admin-openrc.sh"
 echo "============================================================"
 
-# v2 end
+# v3 end
