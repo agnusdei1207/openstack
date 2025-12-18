@@ -1,10 +1,10 @@
 # OpenStack
 
-1. NHN Cloud m2.c4m8 환경에서 OpenStack을 설치합니다.
+1. NHN Cloud m2.c4m8 환경에서 OpenStack을 설치합니다. ubuntu 24.04 LTS
 2. 설치 시 Kolla-Ansible을 사용합니다.
 
 ssh -i openstack.pem ubuntu@133.186.132.232
-sudo -i && ./install.sh 192.168.0.63 133.186.132.232
+sudo -i && ./install.sh 192.168.0.92 133.186.132.232
 
 ## 🛡️ 방화벽 포트 설정 (Security Group)
 
