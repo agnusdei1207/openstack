@@ -21,6 +21,77 @@ error_exit() {
 }
 
 ###############################################################################
+# MariaDB 디버깅 함수
+###############################################################################
+debug_mariadb() {
+    echo ""
+    echo "============================================================"
+    log_info "MariaDB 상세 디버깅 정보"
+    echo "============================================================"
+    
+    # 1. 컨테이너 상태
+    log_info "[1] MariaDB 컨테이너 상태:"
+    docker ps -a --filter "name=mariadb" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+    echo ""
+    
+    # 2. 컨테이너 Inspect (네트워크/IP)
+    if docker ps -a --format '{{.Names}}' | grep -q "^mariadb$"; then
+        log_info "[2] 컨테이너 네트워크 정보:"
+        docker inspect mariadb --format '{{range .NetworkSettings.Networks}}IP: {{.IPAddress}}, Gateway: {{.Gateway}}{{end}}' 2>/dev/null || echo "네트워크 정보 없음"
+        echo ""
+        
+        # 3. 포트 바인딩 상세
+        log_info "[3] 컨테이너 포트 바인딩:"
+        docker inspect mariadb --format '{{range $p, $conf := .NetworkSettings.Ports}}{{$p}} -> {{(index $conf 0).HostPort}}{{"\n"}}{{end}}' 2>/dev/null || echo "포트 바인딩 정보 없음"
+        echo ""
+        
+        # 4. 컨테이너 헬스체크
+        log_info "[4] 컨테이너 Health 상태:"
+        docker inspect mariadb --format '{{.State.Health.Status}}' 2>/dev/null || echo "헬스체크 미설정"
+        echo ""
+        
+        # 5. 컨테이너 로그 (최근 100줄)
+        log_info "[5] MariaDB 컨테이너 로그 (최근 100줄):"
+        docker logs --tail 100 mariadb 2>&1
+        echo ""
+    else
+        log_warn "MariaDB 컨테이너가 존재하지 않음"
+    fi
+    
+    # 6. 호스트 포트 상태
+    log_info "[6] 호스트 3306 포트 상태:"
+    netstat -tulpn 2>/dev/null | grep -E "3306|mysql|mariadb" || ss -tulpn | grep -E "3306|mysql|mariadb" || echo "3306 포트 사용 없음"
+    echo ""
+    
+    # 7. 관련 프로세스
+    log_info "[7] MariaDB/MySQL 관련 프로세스:"
+    ps aux | grep -E "mysql|mariadb" | grep -v grep || echo "관련 프로세스 없음"
+    echo ""
+    
+    # 8. Kolla 설정 확인
+    log_info "[8] Kolla MariaDB 설정:"
+    grep -E "mariadb|database" /etc/kolla/globals.yml 2>/dev/null || echo "MariaDB 관련 설정 없음"
+    echo ""
+    
+    # 9. Docker 네트워크 확인
+    log_info "[9] Docker 네트워크:"
+    docker network ls
+    echo ""
+    
+    # 10. 디스크 공간
+    log_info "[10] 디스크 공간:"
+    df -h / /var/lib/docker 2>/dev/null | head -5
+    echo ""
+    
+    # 11. 메모리 상태
+    log_info "[11] 메모리 상태:"
+    free -h
+    echo ""
+    
+    echo "============================================================"
+}
+
+###############################################################################
 # 0. 사전 검증
 ###############################################################################
 if [ "$EUID" -ne 0 ]; then
@@ -57,6 +128,19 @@ fi
 export DEBIAN_FRONTEND=noninteractive
 export ANSIBLE_HOST_KEY_CHECKING=False
 export PIP_DEFAULT_TIMEOUT=100
+
+# SSH 세션 타임아웃 방지
+unset TMOUT
+export TMOUT=0
+
+# SSH 연결 유지를 위한 설정
+if [ -n "$SSH_TTY" ]; then
+    log_info "SSH 세션 감지 - 타임아웃 방지 활성화"
+    # ClientAliveInterval 동작을 위해 표준출력에 주기적 출력
+    (while true; do sleep 300; echo -n ""; done) &
+    KEEPALIVE_PID=$!
+    trap "kill $KEEPALIVE_PID 2>/dev/null" EXIT
+fi
 
 ###############################################################################
 # 1. 필수 패키지 설치
@@ -400,15 +484,19 @@ cat > ~/ansible.cfg <<EOF
 host_key_checking = False
 pipelining = True
 forks = 4
-timeout = 180
+timeout = 600
 gathering = smart
 fact_caching = jsonfile
 fact_caching_connection = /tmp/ansible_facts
 fact_caching_timeout = 3600
 retry_files_enabled = False
+any_errors_fatal = False
 [ssh_connection]
-ssh_args = -o ControlMaster=auto -o ControlPersist=60s
+ssh_args = -o ControlMaster=auto -o ControlPersist=300s -o ServerAliveInterval=60 -o ServerAliveCountMax=30
 pipelining = True
+[persistent_connection]
+connect_timeout = 600
+command_timeout = 600
 EOF
 export ANSIBLE_CONFIG=~/ansible.cfg
 
@@ -416,6 +504,21 @@ export ANSIBLE_CONFIG=~/ansible.cfg
 # 10. OpenStack 배포
 ###############################################################################
 log_info "Step 9: OpenStack 배포 시작 (약 30~40분)..."
+
+# screen/tmux 사용 권장 (SSH 세션 끊김 방지)
+if [ -z "${STY:-}" ] && [ -z "${TMUX:-}" ] && [ -n "$SSH_TTY" ]; then
+    log_warn "SSH 세션에서 직접 실행 중 - screen/tmux 사용 권장"
+    log_info "세션 끊김이 걱정되면 Ctrl+C 후 다음 명령으로 재실행:"
+    echo "  apt install -y screen && screen -S kolla bash -c '$0 $*'"
+    echo "  (screen 분리: Ctrl+A, D / 재접속: screen -r kolla)"
+    echo ""
+    log_info "10초 후 자동 계속됩니다... (Ctrl+C로 취소)"
+    for i in {10..1}; do
+        echo -ne "\r계속하려면 대기 중... ${i}초 "
+        sleep 1
+    done
+    echo ""
+fi
 
 # 배포 전 최종 포트 확인
 if netstat -tulpn 2>/dev/null | grep -q ":3306" || ss -tulpn 2>/dev/null | grep -q ":3306"; then
@@ -440,28 +543,68 @@ if ! kolla-ansible prechecks -i ~/all-in-one 2>&1 | tee /tmp/kolla-prechecks.log
 fi
 log_success "Prechecks 완료"
 
-# Deploy
+# Deploy (MariaDB 모니터링 포함)
 log_info "Deploy 실행... (로그: /tmp/kolla-deploy.log)"
+log_info "MariaDB 모니터링을 위한 백그라운드 프로세스 시작..."
+
+# MariaDB 모니터링 백그라운드 프로세스
+(
+    MONITOR_LOG="/tmp/mariadb-monitor.log"
+    echo "=== MariaDB 모니터링 시작: $(date) ===" > "$MONITOR_LOG"
+    while true; do
+        echo "--- $(date) ---" >> "$MONITOR_LOG"
+        # 컨테이너 상태
+        docker ps -a --filter "name=mariadb" --format "{{.Names}}: {{.Status}}" >> "$MONITOR_LOG" 2>&1
+        # 포트 상태
+        ss -tulpn 2>/dev/null | grep 3306 >> "$MONITOR_LOG" 2>&1 || echo "3306 포트 미사용" >> "$MONITOR_LOG"
+        # 간단한 로그
+        if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^mariadb$"; then
+            docker logs --tail 5 mariadb 2>&1 | tail -3 >> "$MONITOR_LOG"
+        fi
+        echo "" >> "$MONITOR_LOG"
+        sleep 30
+    done
+) &
+MARIADB_MONITOR_PID=$!
+
+# Deploy 실행
 if ! kolla-ansible deploy -i ~/all-in-one -vv 2>&1 | tee /tmp/kolla-deploy.log; then
     log_error "Deploy 실패"
+    kill $MARIADB_MONITOR_PID 2>/dev/null || true
     echo ""
     
-    # MariaDB 특화 디버깅
-    if docker ps -a --format '{{.Names}}' | grep -q mariadb; then
-        log_info "=== MariaDB 디버깅 정보 ==="
-        docker ps -a --filter "name=mariadb"
-        echo ""
-        log_info "MariaDB 로그:"
-        docker logs mariadb 2>&1 | tail -50
-        echo ""
-        log_info "3306 포트 상태:"
-        netstat -tulpn 2>/dev/null | grep 3306 || ss -tulpn | grep 3306 || echo "포트 사용 없음"
+    # MariaDB 전체 디버깅 실행
+    debug_mariadb
+    
+    # Ansible 에러 분석
+    log_info "=== Ansible 에러 분석 ==="
+    if grep -q "Timeout when waiting for search string MariaDB" /tmp/kolla-deploy.log; then
+        log_error "원인: MariaDB 포트 바인딩 타임아웃"
+        log_info "가능한 해결책:"
+        echo "  1. 메모리 부족 확인: free -h"
+        echo "  2. 디스크 공간 확인: df -h"
+        echo "  3. Docker 재시작: systemctl restart docker"
+        echo "  4. 수동 MariaDB 시작: kolla-ansible deploy -i ~/all-in-one --tags mariadb"
     fi
     
-    log_info "=== 전체 에러 로그 ==="
-    grep -i "fatal\|failed" /tmp/kolla-deploy.log | tail -30
+    if grep -q "bootstrap" /tmp/kolla-deploy.log | tail -5 | grep -qi "fail\|error"; then
+        log_error "원인: MariaDB Bootstrap 실패"
+        log_info "해결책: MariaDB 데이터 삭제 후 재시도"
+        echo "  docker rm -f mariadb"
+        echo "  rm -rf /var/lib/docker/volumes/mariadb/_data/*"
+    fi
+    
+    log_info "=== 전체 에러 로그 (최근 50줄) ==="
+    grep -i "fatal\|failed\|error\|timeout" /tmp/kolla-deploy.log | tail -50
+    
+    log_info "=== MariaDB 모니터링 로그 ==="
+    cat /tmp/mariadb-monitor.log 2>/dev/null | tail -100
+    
     exit 1
 fi
+
+# 모니터링 종료
+kill $MARIADB_MONITOR_PID 2>/dev/null || true
 log_success "Deploy 완료"
 
 ###############################################################################
@@ -472,22 +615,45 @@ log_info "Step 10: 배포 검증..."
 # 컨테이너 시작 대기
 sleep 15
 
-# MariaDB 우선 확인
-log_info "MariaDB 연결 테스트..."
+# MariaDB 우선 확인 (포트 바인딩 대기 시간 증가)
+log_info "MariaDB 연결 테스트... (최대 3분 대기)"
 DB_PASSWORD=$(grep database_password /etc/kolla/passwords.yml | awk '{print $2}')
-for i in {1..30}; do
+for i in {1..60}; do
+    # 컨테이너 실행 상태 확인
+    if ! docker ps --format '{{.Names}}' | grep -q "mariadb"; then
+        log_warn "MariaDB 컨테이너가 실행 중이 아님 - 대기 중 ($i/60)"
+        sleep 3
+        continue
+    fi
+    
+    # 포트 바인딩 확인
+    if ! netstat -tulpn 2>/dev/null | grep -q ":3306" && ! ss -tulpn 2>/dev/null | grep -q ":3306"; then
+        log_warn "MariaDB 포트(3306) 바인딩 대기 중 ($i/60)"
+        sleep 3
+        continue
+    fi
+    
+    # MySQL 연결 테스트
     if docker exec mariadb mysql -uroot -p"$DB_PASSWORD" -e "SELECT 1" >/dev/null 2>&1; then
         log_success "MariaDB 연결 성공"
         break
     fi
     
-    if [ $i -eq 30 ]; then
-        log_error "MariaDB 연결 실패"
-        docker logs mariadb 2>&1 | tail -30
+    if [ $i -eq 60 ]; then
+        log_error "MariaDB 연결 실패 (3분 타임아웃)"
+        log_info "=== MariaDB 컨테이너 상태 ==="
+        docker ps -a --filter "name=mariadb"
+        echo ""
+        log_info "=== MariaDB 로그 ==="
+        docker logs mariadb 2>&1 | tail -50
+        echo ""
+        log_info "=== 포트 상태 ==="
+        netstat -tulpn 2>/dev/null | grep 3306 || ss -tulpn | grep 3306 || echo "3306 포트 없음"
         exit 1
     fi
     
-    sleep 2
+    log_info "MariaDB 연결 대기 중 ($i/60)..."
+    sleep 3
 done
 
 # 예상 컨테이너 확인
